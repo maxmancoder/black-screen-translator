@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <img src="icons/icon48.png" alt="">
+    <div class="grow">
+      <h1>مترجم صفحه و تصاویر</h1>
+      <small id="status">آماده</small>
+    </div>
+    <span id="version" class="badge"></span>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button data-tab="main" class="on" role="tab">ترجمه</button>
+    <button data-tab="speed" role="tab">سرعت</button>
+    <button data-tab="ai" role="tab">موتور / AI</button>
+    <button data-tab="img" role="tab">تصاویر</button>
+    <button data-tab="look" role="tab">ظاهر</button>
+    <button data-tab="adv" role="tab">پیشرفته</button>
+  </nav>
+
+  <main>
+    <!-- ============================ تب ترجمه ============================ -->
+    <section class="pane on" data-pane="main">
+      <div class="scope" role="radiogroup" aria-label="محدوده‌ی ترجمه">
+        <button data-scope="view" role="radio"><span>⚡</span> صفحه‌ی فعلی<small>فقط بخش دیدنی — فوری</small></button>
+        <button data-scope="auto" role="radio"><span>🚀</span> هوشمند<small>دیدنی فوری، بقیه در پس‌زمینه</small></button>
+        <button data-scope="site" role="radio"><span>🌐</span> کل صفحه<small>همه‌ی متن‌ها و عکس‌ها</small></button>
+      </div>
+      <p id="scopeHint" class="hint"></p>
+
+      <button id="startBtn" class="primary">▶ شروع ترجمه صفحه</button>
+      <div id="progress" class="progress hidden">
+        <div class="bar"><span id="barFill"></span></div>
+        <div id="progressText"></div>
+      </div>
+      <div id="error" class="error hidden"></div>
+
+      <div class="langs">
+        <label>از<select id="sourceLang"></select></label>
+        <button id="swap" title="جابه‌جایی زبان‌ها">⇄</button>
+        <label>به<select id="targetLang"></select></label>
+      </div>
+
+      <h2>شورتکات</h2>
+      <div class="row">
+        <button id="shortcutBtn" class="shortcut" title="کلیک کنید و ترکیب کلید جدید را بزنید"></button>
+        <button id="shortcutReset" class="link">پیش‌فرض</button>
+      </div>
+      <p class="hint">روی دکمه کلیک کنید و ترکیب کلید دلخواه را بزنید (مثلاً Alt + Shift + T). زدن دوباره‌ی شورتکات ترجمه را خاموش می‌کند.</p>
+      <p class="hint">شورتکات سراسری کروم: <a href="#" id="openShortcuts">chrome://extensions/shortcuts</a></p>
+
+      <label class="check"><input type="checkbox" id="autoTranslate"> ترجمه‌ی خودکار همه‌ی سایت‌ها به محض باز شدن</label>
+      <label class="check"><input type="checkbox" id="dynamicContent"> ترجمه‌ی خودکار محتوای جدید (SPA، اسکرول بی‌نهایت، منوها)</label>
+    </section>
+
+    <!-- ============================ تب سرعت ============================ -->
+    <section class="pane" data-pane="speed">
+      <h2>پروفایل سرعت</h2>
+      <div class="row presets">
+        <button id="presetFast" class="chip">🚀 سریع‌ترین</button>
+        <button id="presetBalanced" class="chip">⚖️ متعادل</button>
+        <button id="presetQuality" class="chip">🎯 دقیق‌ترین</button>
+      </div>
+      <p class="hint">پروفایل سریع برای صفحات سنگین و اتصال کند مناسب است؛ پروفایل دقیق متن‌های بیشتری را کامل ترجمه می‌کند.</p>
+
+      <h2>درخواست‌ها</h2>
+      <label class="slider">درخواست هم‌زمان: <b id="concVal"></b>
+        <input type="range" id="maxConcurrent" min="1" max="12" step="1">
+      </label>
+      <div class="row two">
+        <label>حداکثر متن در هر درخواست<input type="number" id="batchItems" min="10" max="500" step="10"></label>
+        <label>حداکثر کاراکتر<input type="number" id="batchChars" min="500" max="100000" step="500"></label>
+      </div>
+      <div class="row two">
+        <label>مهلت هر درخواست (ms)<input type="number" id="requestTimeout" min="3000" max="300000" step="1000"></label>
+        <label>تلاش دوباره<input type="number" id="requestRetries" min="0" max="5" step="1"></label>
+      </div>
+      <label>تأخیر بین درخواست‌ها (ms) <span class="hint">— برای سرویس‌هایی که محدودیت نرخ دارند</span>
+        <input type="number" id="requestDelay" min="0" max="5000" step="50">
+      </label>
+
+      <h2>کم‌کردن کار بی‌فایده</h2>
+      <label class="check"><input type="checkbox" id="skipTargetScript"> متنی که همین حالا به زبان مقصد است ترجمه نشود</label>
+      <label class="check"><input type="checkbox" id="lightDom"> حالت سبک: کادرهای دور از دید ساخته نشوند (DOM سبک‌تر)</label>
+      <div class="row two">
+        <label>حداقل طول متن (حرف)<input type="number" id="minTextLength" min="1" max="40" step="1"></label>
+        <label>فاصله‌ی خواباندن کادر (صفحه)<input type="number" id="hibernateDistance" min="0.5" max="10" step="0.5"></label>
+      </div>
+      <div class="row two">
+        <label>حاشیه‌ی ساخت کادر (صفحه)<input type="number" id="renderMargin" min="0" max="3" step="0.1"></label>
+        <label>فاصله‌ی بررسی دوره‌ای (ms)<input type="number" id="relayoutInterval" min="200" max="5000" step="100"></label>
+      </div>
+      <label>زمان هر تکه اسکن (ms)
+        <input type="number" id="scanSliceMs" min="4" max="100" step="2">
+      </label>
+      <label class="check"><input type="checkbox" id="toastEnabled"> نمایش نوار وضعیت (پیشرفت و سرعت) روی صفحه</label>
+    </section>
+
+    <!-- ============================ تب موتور / AI ============================ -->
+    <section class="pane" data-pane="ai">
+      <label>موتور ترجمه<select id="engine"></select></label>
+      <p id="engineNote" class="hint"></p>
+
+      <div id="gcloudRow" class="engineRow">
+        <label>کلید Google Cloud<input type="password" id="gcloudKey" dir="ltr" placeholder="AIza..."></label>
+        <p class="hint">«Cloud Translation API» باید فعال و صورت‌حساب روشن باشد.</p>
+      </div>
+
+      <div id="deeplRow" class="engineRow">
+        <label>کلید DeepL<input type="password" id="deeplKey" dir="ltr" placeholder="xxxx-xxxx-...:fx"></label>
+        <label>لحن (Formality)
+          <select id="deeplFormality">
+            <option value="default">پیش‌فرض</option>
+            <option value="prefer_more">رسمی‌تر</option>
+            <option value="prefer_less">خودی‌تر</option>
+          </select>
+        </label>
+        <p class="hint">کلیدهای Free به <b>:fx</b> ختم می‌شوند و خودکار از سرور رایگان استفاده می‌شود.</p>
+      </div>
+
+      <div id="msRow" class="engineRow">
+        <label>کلید Microsoft Translator<input type="password" id="msKey" dir="ltr"></label>
+        <label>منطقه (Region)<input type="text" id="msRegion" dir="ltr" placeholder="global"></label>
+        <p class="hint">از پورتال Azure → Translator → Keys and Endpoint بگیرید.</p>
+      </div>
+
+      <div id="libreRow" class="engineRow">
+        <label>آدرس سرور LibreTranslate<input type="text" id="libreUrl" dir="ltr" placeholder="https://libretranslate.com"></label>
+        <label>کلید (اختیاری)<input type="password" id="libreKey" dir="ltr"></label>
+        <p class="hint">می‌توانید سرور محلی خودتان را هم بدهید: <span dir="ltr">http://localhost:5000</span></p>
+      </div>
+
+      <div id="llmRow" class="engineRow">
+        <label>سرویس<select id="llmPreset"></select></label>
+        <label>Base URL<input type="text" id="llmBaseUrl" dir="ltr" placeholder="https://api.openai.com/v1"></label>
+        <label>مدل<input type="text" id="llmModel" dir="ltr" list="llmModelList" placeholder="gpt-4o-mini"></label>
+        <datalist id="llmModelList"></datalist>
+        <div class="row">
+          <button id="llmModelsBtn" class="secondary">📋 دریافت لیست مدل‌ها</button>
+          <select id="llmModelPick" class="hidden"></select>
+        </div>
+        <label>کلید API<input type="password" id="llmKey" dir="ltr" placeholder="sk-..."></label>
+        <div class="row two">
+          <label>Temperature<input type="number" id="llmTemperature" min="0" max="2" step="0.1"></label>
+          <label>حداکثر توکن پاسخ <span class="hint">(۰ = خودکار)</span><input type="number" id="llmMaxTokens" min="0" max="64000" step="256"></label>
+        </div>
+        <label>قالب خروجی مدل
+          <select id="llmFormat">
+            <option value="delimiter">نشانه‌دار (سازگارتر و سریع‌تر)</option>
+            <option value="json">JSON ساختاریافته</option>
+          </select>
+        </label>
+        <div class="row two">
+          <label>متن در هر درخواست<input type="number" id="llmItems" min="1" max="400" step="5"></label>
+          <label>کاراکتر در هر درخواست<input type="number" id="llmChars" min="500" max="60000" step="500"></label>
+        </div>
+        <details>
+          <summary>تنظیمات پیشرفته‌ی مدل</summary>
+          <label>دستورهای اضافی برای مدل (System prompt)
+            <textarea id="llmSystemPrompt" rows="2" placeholder="مثلاً: لحن دوستانه و غیررسمی باشد."></textarea>
+          </label>
+          <label>واژه‌نامه (هر خط: واژه=ترجمه)
+            <textarea id="glossary" rows="3" dir="ltr" placeholder="API=رابط برنامه‌نویسی"></textarea>
+          </label>
+          <label>هدرهای اضافی HTTP (هر خط: Name: value)
+            <textarea id="llmExtraHeaders" rows="2" dir="ltr" placeholder="X-Title: My Translator"></textarea>
+          </label>
+          <p class="hint">برای Azure OpenAI یا سرویس‌های خاص لازم است. Azure با هدر <span dir="ltr">api-key</span> خودکار مدیریت می‌شود.</p>
+        </details>
+      </div>
+
+      <label class="check"><input type="checkbox" id="fallbackToFree"> اگر سرویس کلیددار خطا داد، با Google رایگان ادامه بده</label>
+
+      <div class="row">
+        <button id="testBtn" class="secondary">🔌 تست اتصال (گام‌به‌گام)</button>
+      </div>
+      <div id="testResult" class="test hidden"></div>
+      <div id="testSteps" class="steps hidden"></div>
+
+      <h2>کش ترجمه</h2>
+      <label class="check"><input type="checkbox" id="cacheEnabled"> استفاده از کش (ترجمه‌های تکراری فوری)</label>
+      <label class="check"><input type="checkbox" id="persistCache"> ذخیره‌ی کش روی دیسک (بعد از بستن مرورگر هم می‌ماند)</label>
+      <label>حداکثر تعداد ترجمه‌ی ذخیره‌شده<input type="number" id="cacheLimit" min="200" max="200000" step="500"></label>
+      <div class="row">
+        <button id="cacheClear" class="link">🧹 پاک کردن کش</button>
+        <span id="cacheStats" class="hint"></span>
+      </div>
+    </section>
+
+    <!-- ============================ تب تصاویر ============================ -->
+    <section class="pane" data-pane="img">
+      <label class="check"><input type="checkbox" id="translateImages"> ترجمه‌ی متن داخل عکس‌ها (OCR)</label>
+      <label class="check"><input type="checkbox" id="translateBackgroundImages"> شامل تصاویر پس‌زمینه (CSS)</label>
+      <label class="check"><input type="checkbox" id="ocrSkipBlank"> رد کردن سریع تصاویر بی‌متن (سریع‌تر)</label>
+      <label class="check"><input type="checkbox" id="ocrInvert"> تشخیص متن روشن روی زمینه‌ی تیره</label>
+      <label class="check"><input type="checkbox" id="ocrVisibleOnly"> فقط عکس‌های داخل محدوده‌ی دید</label>
+
+      <label>زبان متن داخل عکس‌ها<select id="ocrLang"></select></label>
+
+      <div class="row two">
+        <label>کیفیت OCR
+          <select id="ocrQuality">
+            <option value="best">دقیق (چندمرحله‌ای)</option>
+            <option value="fast">سریع</option>
+          </select>
+        </label>
+        <label>پردازش هم‌زمان
+          <select id="ocrParallel">
+            <option value="1">۱ عکس</option>
+            <option value="2">۲ عکس</option>
+            <option value="3">۳ عکس</option>
+            <option value="4">۴ عکس</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="row two">
+        <label>بزرگ‌ترین ضلع تصویر (px)<input type="number" id="ocrMaxDim" min="600" max="4000" step="100"></label>
+        <label>ظرفیت کش OCR<input type="number" id="ocrCacheLimit" min="50" max="2000" step="50"></label>
+      </div>
+
+      <label>مهلت خواندن هر عکس (ثانیه)<input type="number" id="ocrTimeout" min="5" max="300" step="5"></label>
+
+      <label class="slider">حداقل اطمینان OCR: <b id="confVal"></b>%
+        <input type="range" id="ocrMinConfidence" min="10" max="90" step="5">
+      </label>
+      <p class="hint">اگر متنی از عکس‌ها جا می‌افتد، حداقل اطمینان را کم کنید و زبان متن عکس را درست انتخاب کنید. کاهش «بزرگ‌ترین ضلع» OCR را سریع‌تر می‌کند. اگر خواندن عکسی بیش از «مهلت» طول بکشد، رهایش می‌شود تا بقیه‌ی عکس‌ها معطل نمانند.</p>
+    </section>
+
+    <!-- ============================ تب ظاهر ============================ -->
+    <section class="pane" data-pane="look">
+      <h2>کادر ترجمه</h2>
+      <div class="row">
+        <label class="radio"><input type="radio" name="boxColorMode" value="custom"> رنگ ثابت</label>
+        <input type="color" id="boxColor">
+        <label class="radio"><input type="radio" name="boxColorMode" value="auto"> هم‌رنگ پس‌زمینه‌ی سایت</label>
+      </div>
+      <div class="row">
+        <label class="radio"><input type="radio" name="textColorMode" value="auto"> رنگ متن خودکار</label>
+        <label class="radio"><input type="radio" name="textColorMode" value="custom"> ثابت</label>
+        <input type="color" id="textColor">
+      </div>
+      <label class="slider">شفافیت کادر: <b id="opacityVal"></b>%
+        <input type="range" id="boxOpacity" min="0.1" max="1" step="0.05">
+      </label>
+      <label class="slider">اندازه‌ی فونت: <b id="fontScaleVal"></b>%
+        <input type="range" id="fontScale" min="50" max="200" step="5">
+      </label>
+      <div class="row two">
+        <label>فاصله‌ی داخلی (px)<input type="number" id="boxPadding" min="0" max="12" step="1"></label>
+        <label>گردی گوشه (px)<input type="number" id="boxRadius" min="0" max="20" step="1"></label>
+      </div>
+      <label>فونت ترجمه (خالی = فونت خود سایت)
+        <input type="text" id="fontFamily" placeholder="Vazirmatn, Tahoma">
+      </label>
+      <label>جهت متن ترجمه
+        <select id="forceRtl">
+          <option value="auto">خودکار بر اساس زبان مقصد</option>
+          <option value="on">همیشه راست‌به‌چپ</option>
+          <option value="off">همیشه چپ‌به‌راست</option>
+        </select>
+      </label>
+    </section>
+
+    <!-- ============================ تب پیشرفته ============================ -->
+    <section class="pane" data-pane="adv">
+      <h2>چه چیزی ترجمه شود</h2>
+      <label class="check"><input type="checkbox" id="translateInputs"> دکمه‌های فرم و placeholder فیلدها</label>
+      <label class="check"><input type="checkbox" id="translateInlineCode"> کد داخل جمله (code)</label>
+      <label class="check"><input type="checkbox" id="translateCodeBlocks"> بلوک‌های کد (pre)</label>
+      <label class="check"><input type="checkbox" id="respectNoTranslate"> متن‌هایی که سایت «غیرقابل ترجمه» علامت زده را ترجمه نکن</label>
+      <label>سلکتورهای CSS که نادیده گرفته شوند (با کاما)
+        <textarea id="skipSelectors" rows="2" dir="ltr" placeholder=".no-translate, #comments, nav.footer"></textarea>
+      </label>
+
+      <h2>عیب‌یابی و پشتیبان‌گیری</h2>
+      <label class="check"><input type="checkbox" id="diagnostics"> ثبت گزارش در کنسول (برای بررسی مشکلات)</label>
+      <div class="row">
+        <button id="diagRefresh" class="secondary">🔄 به‌روزرسانی وضعیت</button>
+        <button id="exportBtn" class="secondary">⬇️ خروجی تنظیمات</button>
+        <button id="importBtn" class="secondary">⬆️ بازیابی</button>
+        <input type="file" id="importFile" accept="application/json" class="hidden">
+      </div>
+      <pre id="diagBox" class="diag"></pre>
+      <div class="row">
+        <button id="resetBtn" class="link danger">↩️ بازگرداندن تنظیمات پیش‌فرض</button>
+      </div>
+      <p class="hint">نسخه <b id="version2"></b> — با راست‌کلیک روی آیکون افزونه هم می‌توانید شورتکات‌ها را ببینید.</p>
+    </section>
+  </main>
+
+  <script src="defaults.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
