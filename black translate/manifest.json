@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Page & Image Translator",
+  "description": "ترجمه‌ی زنده‌ی کل صفحه و متن داخل عکس‌ها از هر زبانی به هر زبانی — سریع، با موتورهای Google، DeepL، Microsoft و هوش مصنوعی",
+  "version": "2.1.1",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": ["storage", "unlimitedStorage", "activeTab", "scripting", "offscreen"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "مترجم صفحه و تصاویر (شورتکات: Alt+Shift+T)"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["defaults.js", "content.js"],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ],
+  "commands": {
+    "toggle-translation": {
+      "suggested_key": { "default": "Alt+Shift+T" },
+      "description": "شروع / توقف ترجمه صفحه (شورتکات سراسری کروم)"
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  }
+}
