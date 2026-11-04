@@ -339,7 +339,11 @@ async function doOcr(msg) {
     await pass(canvas, '3');
 
     /* پاس ۲: متن پراکنده (دکمه، بنر، اینفوگرافیک) — فقط اگر پاس اول کم پیدا کرد */
-    if (quality !== 'fast' && !msg.quick && lines.length < 3) await pass(canvas, '11');
+    // Sparse segmentation is valuable for dispersed UI labels and comic bubbles:
+    // trigger on low line yield or broadly spread text, not merely zero/one line.
+    const sparseLikely = lines.length < 3 ||
+      (lines.length <= 8 && (natW / Math.max(1, natH) > 1.35 || natH / Math.max(1, natW) > 1.35));
+    if (quality !== 'fast' && !msg.quick && sparseLikely) await pass(canvas, '11');
 
     /* پاس ۳: تصویر معکوس برای متن روشن روی زمینه‌ی تیره */
     const wantsInvert = msg.invert !== false && darkFrac > 0.3 &&

@@ -161,7 +161,20 @@ function bucketMap(i) {
   if (!m) { m = new Map(); buckets.set(i, m); }
   return m;
 }
-function cacheKeyOf(id, sl, tl, text) { return JSON.stringify(['v2', id, sl, tl, text]); }
+function cacheKeyOf(id, sl, tl, text) { return JSON.stringify(['v3', id, sl, tl, text]); }
+
+// Hash effective provider configuration: credentials and custom headers influence
+// results, but their plaintext must never be persisted in cache keys.
+async function providerFingerprint(settings, engine) {
+  const keys = ['gcloudKey', 'deeplKey', 'msKey', 'libreKey', 'libreUrl', 'llmKey',
+    'llmModel', 'llmBaseUrl', 'llmPreset', 'llmFormat', 'llmItems', 'llmChars',
+    'llmTemperature', 'llmMaxTokens', 'llmSystemPrompt', 'llmExtraHeaders',
+    'deeplFormality', 'glossary', 'msRegion'];
+  const config = JSON.stringify([engine, ...keys.map((k) => settings[k] == null ? null : settings[k])]);
+  const bytes = new TextEncoder().encode(config);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+}
 function engineId(s) {
   if (s.engine === 'llm') return 'llm:' + (s.llmModel || '') + '@' + ptNormalizeBaseUrl(s.llmBaseUrl);
   return s.engine;
@@ -429,7 +442,7 @@ async function translateTexts(texts, sl, tl, opts) {
   let warning = opts.warning || null;
   if (!ready) warning = 'کلید/تنظیمات موتور «' + (PT_ENGINE_INFO[s.engine] ? PT_ENGINE_INFO[s.engine].name : s.engine) +
     '» کامل نیست؛ موقتاً با Google رایگان ترجمه می‌شود.';
-  const id = engineId(Object.assign({}, s, { engine })) + '|' + JSON.stringify([s.deeplFormality, s.libreUrl, s.llmFormat, s.llmTemperature, s.llmMaxTokens, s.llmSystemPrompt, s.glossary, s.msRegion]);
+  const id = engineId(Object.assign({}, s, { engine })) + '|' + await providerFingerprint(s, engine);
   const limit = cacheLimitOf(s);
   if (s.cacheEnabled && s.persistCache) await loadCache();
 
@@ -720,7 +733,7 @@ function normalizeGtx(data, count) {
       return null;
     }
   }
-  if (out.some((t) => !t || /^\[\s*\[/.test(t))) return null;
+  if (out.some((t) => !t.trim() || /^\[\s*\[/.test(t))) return null;
   return out;
 }
 

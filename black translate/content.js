@@ -107,7 +107,8 @@
     'translateImages', 'translateBackgroundImages', 'ocrMinConfidence', 'ocrLang', 'ocrQuality', 'ocrInvert',
     'ocrMaxDim', 'ocrSkipBlank', 'ocrVisibleOnly', 'scope', 'respectNoTranslate', 'translateInputs',
     'translateInlineCode', 'translateCodeBlocks', 'skipSelectors', 'minTextLength', 'skipTargetScript',
-    'deeplFormality', 'llmExtraHeaders', 'llmSystemPrompt', 'llmTemperature', 'glossary'];
+    'deeplFormality', 'llmExtraHeaders', 'llmSystemPrompt', 'llmTemperature', 'llmMaxTokens',
+    'llmKey', 'llmItems', 'llmChars', 'cacheEnabled', 'glossary'];
   const RELAYOUT_KEYS = ['lightDom', 'hibernateDistance', 'renderMargin', 'fontScale', 'boxOpacity',
     'boxPadding', 'boxRadius', 'fontFamily', 'forceRtl'];
 

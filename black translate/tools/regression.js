@@ -48,6 +48,8 @@ const chromeStub = {
 };
 
 const sandbox = {
+  crypto: require('crypto').webcrypto,
+  TextEncoder,
   console, setTimeout, clearTimeout, setInterval, clearInterval, Promise, JSON, Math, Date,
   URL, AbortController, Set, Map, WeakMap, WeakSet, RegExp, Error, String, Number, Array, Object,
   isFinite, isNaN, parseInt, parseFloat, Boolean, Symbol, TextEncoder, structuredClone,
@@ -74,6 +76,18 @@ load('background.js');
   ok('cache keys unambiguous', sandbox.cacheKeyOf('a|b','c','d','x') !== sandbox.cacheKeyOf('a','b|c','d','x'));
   eq('gtx unchanged valid', sandbox.normalizeGtx(['same'],1), ['same']);
   eq('gtx malformed rejected', sandbox.normalizeGtx([{}],1), null);
+  eq('gtx whitespace rejected', sandbox.normalizeGtx(['   '],1), null);
+  const fpSettings = Object.assign({}, sandbox.PT_DEFAULTS, { llmKey: 'secret-A', llmExtraHeaders: '{"Authorization":"Bearer secret-A"}' });
+  const fp1 = await sandbox.providerFingerprint(fpSettings, 'llm');
+  eq('provider fingerprint stable', await sandbox.providerFingerprint(fpSettings, 'llm'), fp1);
+  const changedHeaders = Object.assign({}, fpSettings, { llmExtraHeaders: '{"X-Mode":"new"}' });
+  const fp2 = await sandbox.providerFingerprint(changedHeaders, 'llm');
+  ok('custom headers invalidate fingerprint', fp1 !== fp2);
+  ok('credentials not embedded in fingerprint', !fp1.includes('secret-A'));
+  const changedCredential = Object.assign({}, fpSettings, { llmKey: 'secret-B' });
+  ok('provider credentials invalidate fingerprint', fp1 !== await sandbox.providerFingerprint(changedCredential, 'llm'));
+  const changedModel = Object.assign({}, fpSettings, { llmModel: 'other-model' });
+  ok('model invalidates fingerprint', fp1 !== await sandbox.providerFingerprint(changedModel, 'llm'));
   vm.runInContext(`getSettings = async () => Object.assign({}, PT_DEFAULTS, {engine:'gtx', cacheEnabled:true, persistCache:false});
     translateChunk = async (engine, items) => ({engine, items: items.map((t) => t === 'bad' ? null : t)});`, sandbox);
   const first = await sandbox.translateTexts(['same','bad'], 'en', 'fr', {});
