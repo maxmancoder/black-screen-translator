@@ -14,6 +14,13 @@ const RTL_OCR = ['ara', 'fas', 'heb', 'urd', 'pus', 'ckb', 'uig', 'snd', 'yid'];
 let liveWorkers = 0;
 let cacheLimit = 400;
 
+let lastOcrError = '';      // آخرین خطای OCR (برای نمایش در پنل)
+function noteOcrError(e, where) {
+  const text = String((e && (e.message || e)) || e || 'خطای نامشخص');
+  lastOcrError = where ? where + ': ' + text : text;
+  console.warn('[PT/OCR] ' + lastOcrError);
+}
+
 function workerOptions(lang, quality) {
   const opts = {
     workerPath: chrome.runtime.getURL('lib/worker.min.js'),
@@ -35,10 +42,36 @@ function workerOptions(lang, quality) {
 }
 
 async function createWorker(lang, quality) {
-  const w = await Tesseract.createWorker(lang, 1, workerOptions(lang, quality));
-  await w.setParameters({ preserve_interword_spaces: '1' });
-  liveWorkers++;
-  return w;
+  const opts = workerOptions(lang, quality);
+  let mine = null;
+  /* خطای Worker (کرش wasm مثل memory access out of bounds، یا شکست بارگذاری مدل)
+     → همان Worker از پول بیرون می‌رود تا درخواست بعدی با Worker تازه اجرا شود؛
+     وگرنه Worker خراب دوباره استفاده می‌شود و همه‌ی OCR ها برای همیشه می‌خوابند */
+  opts.errorHandler = (e) => {
+    noteOcrError(e, 'worker ' + lang + '/' + quality);
+    retireWorker(mine, lang, quality);
+  };
+  try {
+    const w = await Tesseract.createWorker(lang, 1, opts);
+    mine = w;
+    await w.setParameters({ preserve_interword_spaces: '1' });
+    liveWorkers++;
+    return w;
+  } catch (e) {
+    noteOcrError(e, 'createWorker ' + lang + '/' + quality);
+    throw e;
+  }
+}
+
+/* Worker خراب: از پول حذف و در صورت نبود Worker زنده، منتظرها با خطا بیدار می‌شوند */
+function retireWorker(w, lang, quality) {
+  if (!w || w.__ptDead) return;
+  const pool = pools.get(lang + '|' + quality);
+  if (pool) dropWorker(pool, w);
+  terminateWorker(w);
+  if (pool && !aliveWorkers(pool).length && !pool.creating) {
+    wakeWaiters(pool, new Error('worker OCR از کار افتاد'));
+  }
 }
 
 async function terminateWorker(w) {
@@ -137,16 +170,51 @@ function release(pool, worker) {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.target !== 'offscreen') return false;
   if (msg.cacheLimit) cacheLimit = msg.cacheLimit;
+  const fail = (e, where) => {
+    noteOcrError(e, where);
+    sendResponse({ ok: false, error: lastOcrError });
+  };
   if (msg.type === 'ocr-warmup') {
     acquire(msg.lang || 'eng', msg.quality || 'best', msg.parallel)
-      .then(({ pool, worker }) => { release(pool, worker); sendResponse({ ok: true }); })
-      .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+      .then(({ pool, worker }) => { release(pool, worker); sendResponse({ ok: true, lastError: lastOcrError }); })
+      .catch((e) => fail(e, 'warmup'));
+    return true;
+  }
+  if (msg.type === 'ocr-selftest') {
+    ocrSelfTest(msg).then(sendResponse, (e) => fail(e, 'selftest'));
     return true;
   }
   if (msg.type !== 'ocr') return false;
-  doOcr(msg).then(sendResponse, (e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+  doOcr(msg).then(sendResponse, (e) => fail(e, 'ocr'));
   return true;
 });
+
+/* آزمایش OCR با تصویر ساخته‌شده در همان صفحه‌ی offscreen — برای دیدن خطای دقیق موتور */
+async function ocrSelfTest(msg) {
+  const lang = msg.lang || 'eng';
+  const quality = msg.quality || 'best';
+  const t0 = Date.now();
+  const c = document.createElement('canvas');
+  c.width = 720; c.height = 180;
+  const x = c.getContext('2d');
+  x.fillStyle = '#ffffff'; x.fillRect(0, 0, c.width, c.height);
+  x.fillStyle = '#000000'; x.textBaseline = 'middle';
+  x.font = 'bold 46px Arial, Helvetica, sans-serif';
+  x.fillText('Black Screen Translator', 24, 60);
+  x.font = 'bold 38px Arial, Helvetica, sans-serif';
+  x.fillText('Image OCR self test 2026', 24, 128);
+  const dataUrl = c.toDataURL('image/png');
+  const res = await doOcr({
+    type: 'ocr', dataUrl, lang, minConf: 20, noCache: true,
+    quality, parallel: msg.parallel, skipBlank: false
+  });
+  return {
+    ok: true, lang, quality, ms: Date.now() - t0,
+    blocks: (res.blocks || []).length,
+    text: (res.blocks || []).map((b) => b.text).join(' | '),
+    lastError: lastOcrError
+  };
+}
 
 async function loadBlob(msg) {
   if (msg.dataUrl) return (await fetch(msg.dataUrl)).blob();

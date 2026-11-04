@@ -12,8 +12,11 @@ cd "black translate"
 node tools/selftest.js    # منطق خالص (۱۵۱ تست)
 node tools/domsmoke.js    # اسکن → ترجمه → رسم کادر
 node tools/imgsmoke.js    # مسیر واقعی عکس‌ها (صف OCR، اسکرول، ری‌استارت، OCR گیرکرده)
-node tools/ocrsmoke.js    # پول Worker در offscreen.js
+node tools/ocrsmoke.js    # پول Worker در offscreen.js (هم‌زمانی، کرش Worker، آزمایش OCR)
 ```
+
+## اگر OCR خطا داد
+در پنل ← تب **تصاویر** ← دکمه‌ی **🔬 آزمایش OCR روی تصویر نمونه** را بزنید؛ متن دقیق خطای موتور نشان داده می‌شود.
 
 ## نسخه‌ی ۲.۱.۱
 رفع نقص «فقط یک عکس ترجمه می‌شود»: خطای `stop()`، نشت اسلات هم‌زمانی OCR، نبود مهلت روی درخواست OCR، و قفل‌شدن پول Worker در `offscreen.js`. جزئیات در [`black translate/README.md`](black%20translate/README.md).
