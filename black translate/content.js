@@ -107,7 +107,7 @@
     'translateImages', 'translateBackgroundImages', 'ocrMinConfidence', 'ocrLang', 'ocrQuality', 'ocrInvert',
     'ocrMaxDim', 'ocrSkipBlank', 'ocrVisibleOnly', 'scope', 'respectNoTranslate', 'translateInputs',
     'translateInlineCode', 'translateCodeBlocks', 'skipSelectors', 'minTextLength', 'skipTargetScript',
-    'deeplFormality', 'llmExtraHeaders', 'llmSystemPrompt', 'glossary'];
+    'deeplFormality', 'llmExtraHeaders', 'llmSystemPrompt', 'llmTemperature', 'glossary'];
   const RELAYOUT_KEYS = ['lightDom', 'hibernateDistance', 'renderMargin', 'fontScale', 'boxOpacity',
     'boxPadding', 'boxRadius', 'fontFamily', 'forceRtl'];
 
@@ -116,6 +116,7 @@
     const old = settings;
     settings = Object.assign({}, settings);
     for (const k in changes) settings[k] = changes[k].newValue;
+    if (RESTART_KEYS.some((k) => k in changes)) localCache.clear();
     if (!active) return;
     if (RESTART_KEYS.some((k) => k in changes && JSON.stringify(changes[k].newValue) !== JSON.stringify(old[k]))) {
       stop(); start();
@@ -482,7 +483,7 @@
 
     const skip = shouldSkipText(text);
     if (skip === 'same') {
-      if (skip === 'same' && settings.diagnostics) console.debug('[PT] skip (same language):', text.slice(0, 60));
+      if (skip === 'same' && settings.diagnostics) console.debug('[PT] skip (same language)');
       if (!isView()) { stats.textTotal++; stats.textDone++; }
       stats.textSkipped++;
       return true;
@@ -582,7 +583,7 @@
   }
 
   /* ============================ ترجمه ============================ */
-  function ck(text) { return settings.sourceLang + '|' + settings.targetLang + '|' + text; }
+  function ck(text) { return JSON.stringify([settings.engine, settings.sourceLang, settings.targetLang, text]); }
 
   function setDocPos(item) {
     if (!item.rect) { item.docTop = null; return; }
@@ -709,9 +710,15 @@
         }
         if (localCache.size > 60000) localCache.clear();
         const map = new Map();
-        texts.forEach((t, i) => { map.set(t, res.translations[i]); localCache.set(ck(t), res.translations[i]); });
+        texts.forEach((t, i) => {
+          if (res.statuses && res.statuses[i] === 'success' && typeof res.translations[i] === 'string') {
+            map.set(t, res.translations[i]);
+            if (res.engine === settings.engine) localCache.set(ck(t), res.translations[i]);
+          }
+        });
         batch.forEach((it) => {
           const tr = map.get(it.text);
+          if (tr == null) { it.failed = true; it.queued = false; countItem(it); return; }
           it.translation = (tr == null || tr === '') ? it.text : tr;
           it.done = true;
           it.queued = false;
@@ -725,7 +732,7 @@
       .catch((e) => {
         if (mySession !== session) return;
         if (e && e.fatal) {
-          batch.forEach((it) => { it.done = true; it.queued = false; countItem(it); if (it.type === 'text') stats.textDone++; });
+          batch.forEach((it) => { it.failed = true; it.queued = false; countItem(it); });
           if (!errorShown) { errorShown = true; showToast('❌ ' + escapeHtml(e.message), 12000); }
           return;
         }
@@ -734,7 +741,7 @@
         batch.forEach((it) => {
           it.tries = (it.tries || 0) + 1;
           if (it.tries < maxTries) again.push(it);
-          else { it.done = true; it.queued = false; countItem(it); if (it.type === 'text') stats.textDone++; }
+          else { it.failed = true; it.queued = false; countItem(it); }
         });
         if (again.length) {
           const delay = Math.min(8000, 900 * again[0].tries);
@@ -1291,7 +1298,8 @@
       if (job.mode === 'capture') await processCapture(job, mySession);
       else requeued = await processImage(job, mySession);
     } catch (e) {
-      if (settings.diagnostics) console.debug('[Page Translator] OCR failed:', job.src, e);
+      countImageFail(job, null);
+      if (settings.diagnostics) console.debug('[Page Translator] OCR failed');
     } finally {
       /* اسلات همیشه آزاد می‌شود؛ حتی اگر نشست عوض شده باشد یا خطای غیرمنتظره رخ دهد.
          در غیر این صورت با چند خطا، صف تصاویر برای همیشه می‌ایستد. */
@@ -1324,7 +1332,7 @@
     } catch (e) { res = null; }
     if (mySession !== session) return false;
     if (!res || !res.ok) {
-      if (job.isBg || job.captureDone) { countImageFail(job, res); return false; }
+      if (job.captureDone) { countImageFail(job, res); return false; }
       job.mode = 'capture';
       imageQueue.push(job);
       return true;
@@ -1339,7 +1347,7 @@
     job.failed = true;
     stats.imgFail++;
     if (settings.diagnostics) {
-      console.debug('[Page Translator] image not OCR-ed:', job.src, (res && res.error) || 'no result');
+      console.debug('[Page Translator] image not OCR-ed:', (res && res.error) || 'no result');
     }
     updateToast();
   }

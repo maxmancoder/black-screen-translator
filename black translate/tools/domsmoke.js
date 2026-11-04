@@ -214,7 +214,7 @@ const chromeStub = {
     sendMessage: (msg, cb) => {
       sent.push(msg);
       let res = { ok: true };
-      if (msg.type === 'translate') res = { ok: true, translations: msg.texts.map((t) => 'TT:' + t), engine: 'google', ms: 5 };
+      if (msg.type === 'translate') res = { ok: true, translations: msg.texts.map((t) => 'TT:' + t), statuses: msg.texts.map(() => 'success'), engine: 'google', ms: 5 };
       else if (msg.type === 'hello') res = { active: true };
       else if (msg.type === 'status') res = { ok: true, active: true };
       if (cb) setTimeout(() => cb(res), 1);
