@@ -48,6 +48,8 @@ const chromeStub = {
 };
 
 const sandbox = {
+  crypto: require('crypto').webcrypto,
+  TextEncoder,
   console, setTimeout, clearTimeout, setInterval, clearInterval, Promise, JSON, Math, Date,
   URL, AbortController, Set, Map, WeakMap, WeakSet, RegExp, Error, String, Number, Array, Object,
   isFinite, isNaN, parseInt, parseFloat, Boolean, Symbol, TextEncoder, structuredClone,

@@ -450,7 +450,10 @@ async function tabStatus() {
 async function toggleTab() {
   const tab = await activeTab();
   if (!tab) return null;
-  try { return await chrome.runtime.sendMessage({ type: 'toggle-tab', tabId: tab.id, action: 'toggle' }); }
+  try {
+    const st = await chrome.tabs.sendMessage(tab.id, { type:'status' }, { frameId:0 }).catch(() => null);
+    return await chrome.runtime.sendMessage({ type: 'toggle-tab', tabId: tab.id, action: st && st.regionMode ? 'stop' : 'toggle' });
+  }
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 }
 
@@ -565,6 +568,29 @@ async function init() {
   renderSettings();
   bindSettings();
 
+  const updateRegionStatus = async () => {
+    const tab=await activeTab(); if(!tab)return;
+    const [r,st]=await Promise.all([chrome.runtime.sendMessage({type:'region-config',tabId:tab.id}),tabStatus()]);
+    const cfg=r&&r.config;
+    const base=st&&st.regionMode?'حالت محدوده فعال است — فقط ناحیه‌ی ذخیره‌شده پردازش می‌شود':cfg&&cfg.mode==='full'?'حالت ترجمه کل سایت فعال است':cfg&&cfg.region?'محدوده ذخیره شده است؛ حالت فعلی: '+(cfg.mode==='region'?'محدوده':'کل سایت'):'هنوز محدوده‌ای ذخیره نشده است';
+    const m=st&&st.regionMetrics;
+    $('regionModeStatus').textContent=base+(st&&st.regionMode&&m&&m.refreshes?` | OCR ${Math.round(m.ocrMs/m.refreshes)}ms، ترجمه ${Math.round(m.translationMs/m.refreshes)}ms، عبور ${Math.round(m.passes/m.refreshes*10)/10}`:'');
+    $('regionEnableBtn').disabled=!!(cfg&&cfg.mode==='region'&&st&&st.regionMode);
+    $('regionChangeBtn').disabled=false;
+  };
+  const validPopupRegion=(r)=>!!r&&['xRatio','yRatio','widthRatio','heightRatio'].every(k=>Number.isFinite(r[k])&&r[k]>=0&&r[k]<=1)&&r.widthRatio>0&&r.heightRatio>0&&r.xRatio+r.widthRatio<=1.00001&&r.yRatio+r.heightRatio<=1.00001;
+  $('regionEnableBtn').onclick=async()=>{
+    const tab=await activeTab();if(!tab)return;
+    const r=await chrome.runtime.sendMessage({type:'region-config',tabId:tab.id});
+    if(r&&r.config&&validPopupRegion(r.config.region)){const x=await chrome.runtime.sendMessage({type:'region-mode',tabId:tab.id,mode:'region'});if(x&&!x.ok)showRegionError(x.error);}
+    else {const x=await chrome.runtime.sendMessage({type:'begin-region',tabId:tab.id});if(x&&!x.ok)showRegionError(x.error);}
+    setTimeout(updateRegionStatus,250);
+  };
+  $('regionChangeBtn').onclick=async()=>{const tab=await activeTab();if(tab){const x=await chrome.runtime.sendMessage({type:'begin-region',tabId:tab.id});if(x&&!x.ok)showRegionError(x.error);}};
+  $('regionDisableBtn').onclick=async()=>{const tab=await activeTab();if(tab){const x=await chrome.runtime.sendMessage({type:'region-mode',tabId:tab.id,mode:'full'});if(x&&!x.ok)showRegionError(x.error);setTimeout(updateRegionStatus,250);}};
+  function showRegionError(text){$('error').textContent=text||'عملیات محدوده ناموفق بود';$('error').classList.remove('hidden');}
+
+
   $('startBtn').onclick = async () => {
     const res = await toggleTab();
     if (res && !res.ok) { renderStatus(res); return; }
@@ -572,9 +598,10 @@ async function init() {
   };
 
   const poll = async () => renderStatus(await tabStatus());
-  poll();
+  poll(); updateRegionStatus();
   refreshCacheStats();
   setInterval(poll, 700);
+  setInterval(updateRegionStatus, 1500);
 }
 
 init();

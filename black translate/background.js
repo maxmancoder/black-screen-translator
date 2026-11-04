@@ -73,6 +73,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'hello':
       reply(helloState(sender));
       return true;
+    case 'begin-region':
+      reply(beginRegion(msg.tabId));
+      return true;
+    case 'region-config':
+      reply(msg.tabId ? regionConfigForTab(msg.tabId) : regionConfigFor(sender));
+      return true;
+    case 'region-save':
+      reply(saveRegionFor(sender, msg.region));
+      return true;
+    case 'region-mode':
+      reply(setRegionMode(msg.tabId || (sender.tab && sender.tab.id), msg.mode));
+      return true;
     case 'toggle-tab':
       reply(setTabState(msg.tabId || (sender.tab && sender.tab.id), msg.action || 'toggle'));
       return true;
@@ -101,10 +113,60 @@ async function isTabActive(tabId) {
 }
 async function helloState(sender) {
   if (!sender.tab) return { active: false };
-  return { active: await isTabActive(sender.tab.id) };
+  const rc=await regionConfigFor(sender);
+  if (rc.ok && rc.config && rc.config.mode==='region' && validRegion(rc.config.region)) return {active:false,regionConfig:rc.config};
+  if(rc.ok&&rc.config&&rc.config.mode==='full')return {active:true,regionConfig:rc.config};
+  return { active: await isTabActive(sender.tab.id), regionConfig:rc.config || null };
 }
 
 const lastToggleAt = new Map();
+function senderOrigin(sender) {
+  try { const u = new URL(sender && sender.tab && sender.tab.url); return /^https?:$/.test(u.protocol) ? u.origin : null; }
+  catch (_) { return null; }
+}
+function regionStoreKey(origin) { return 'ptRegionMode:' + encodeURIComponent(origin); }
+function validRegion(r) {
+  if (!r || !['xRatio','yRatio','widthRatio','heightRatio'].every((k) => Number.isFinite(r[k]) && r[k] >= 0 && r[k] <= 1)) return false;
+  return r.widthRatio > 0 && r.heightRatio > 0 && r.xRatio + r.widthRatio <= 1.00001 && r.yRatio + r.heightRatio <= 1.00001;
+}
+async function regionConfigForTab(tabId) {
+  try { const tab=await chrome.tabs.get(tabId); return regionConfigFor({tab:{url:tab.url}}); }
+  catch (_) { return {ok:false,error:'تب معتبر نیست.'}; }
+}
+async function regionConfigFor(sender) {
+  const origin = senderOrigin(sender);
+  if (!origin) return { ok:false, error:'این صفحه از انتخاب محدوده پشتیبانی نمی‌کند.' };
+  const obj = await chrome.storage.local.get(regionStoreKey(origin));
+  const cfg = obj[regionStoreKey(origin)];
+  return { ok:true, origin, config: cfg && (cfg.mode === 'region' || cfg.mode === 'full') ? cfg : null };
+}
+async function saveRegionFor(sender, region) {
+  const origin = senderOrigin(sender);
+  if (!origin || !validRegion(region)) return { ok:false, error:'محدوده‌ی ذخیره‌شده معتبر نیست.' };
+  const key=regionStoreKey(origin), old=(await chrome.storage.local.get(key))[key];
+  const cfg={ origin, mode:'region', region:{xRatio:region.xRatio,yRatio:region.yRatio,widthRatio:region.widthRatio,heightRatio:region.heightRatio}, updatedAt:Date.now() };
+  await chrome.storage.local.set({[key]:cfg});
+  return {ok:true,config:cfg, previousMode:old && old.mode};
+}
+async function setRegionMode(tabId, mode) {
+  if (!tabId || !['region','full'].includes(mode)) return {ok:false,error:'حالت محدوده نامعتبر است.'};
+  const tab=await chrome.tabs.get(tabId);
+  let origin; try { const u=new URL(tab.url); if(!/^https?:$/.test(u.protocol)) throw 0; origin=u.origin; } catch (_) { return {ok:false,error:'این صفحه پشتیبانی نمی‌شود.'}; }
+  const key=regionStoreKey(origin), old=(await chrome.storage.local.get(key))[key];
+  if(mode==='region' && (!old || !validRegion(old.region))) return {ok:false,error:'ابتدا محدوده‌ای را انتخاب و ذخیره کنید.'};
+  const cfg={origin,mode,region:old && validRegion(old.region)?old.region:null,updatedAt:Date.now()};
+  await chrome.storage.local.set({[key]:cfg});
+  await chrome.storage.session.set({[tabKey(tabId)]:mode==='full'});
+  const res=await broadcast(tabId,{type:'region-mode',mode,config:cfg});
+  return Object.assign({ok:true,config:cfg},res && res.error?{ok:false,error:res.error}:{});
+}
+async function beginRegion(tabId) {
+  if (!tabId) return { ok: false, error: 'تب فعالی پیدا نشد' };
+  // Region mode is transient: persist inactive so navigation cannot start a page scan.
+  await chrome.storage.session.set({ [tabKey(tabId)]: false });
+  return broadcast(tabId, { type: 'begin-region' });
+}
+
 async function setTabState(tabId, action) {
   if (!tabId) return { ok: false, error: 'تب فعالی پیدا نشد' };
   let next;
@@ -161,7 +223,20 @@ function bucketMap(i) {
   if (!m) { m = new Map(); buckets.set(i, m); }
   return m;
 }
-function cacheKeyOf(id, sl, tl, text) { return JSON.stringify(['v2', id, sl, tl, text]); }
+function cacheKeyOf(id, sl, tl, text) { return JSON.stringify(['v3', id, sl, tl, text]); }
+
+// Hash effective provider configuration: credentials and custom headers influence
+// results, but their plaintext must never be persisted in cache keys.
+async function providerFingerprint(settings, engine) {
+  const keys = ['gcloudKey', 'deeplKey', 'msKey', 'libreKey', 'libreUrl', 'llmKey',
+    'llmModel', 'llmBaseUrl', 'llmPreset', 'llmFormat', 'llmItems', 'llmChars',
+    'llmTemperature', 'llmMaxTokens', 'llmSystemPrompt', 'llmExtraHeaders',
+    'deeplFormality', 'glossary', 'msRegion'];
+  const config = JSON.stringify([engine, ...keys.map((k) => settings[k] == null ? null : settings[k])]);
+  const bytes = new TextEncoder().encode(config);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+}
 function engineId(s) {
   if (s.engine === 'llm') return 'llm:' + (s.llmModel || '') + '@' + ptNormalizeBaseUrl(s.llmBaseUrl);
   return s.engine;
@@ -429,7 +504,7 @@ async function translateTexts(texts, sl, tl, opts) {
   let warning = opts.warning || null;
   if (!ready) warning = 'کلید/تنظیمات موتور «' + (PT_ENGINE_INFO[s.engine] ? PT_ENGINE_INFO[s.engine].name : s.engine) +
     '» کامل نیست؛ موقتاً با Google رایگان ترجمه می‌شود.';
-  const id = engineId(Object.assign({}, s, { engine })) + '|' + JSON.stringify([s.deeplFormality, s.libreUrl, s.llmFormat, s.llmTemperature, s.llmMaxTokens, s.llmSystemPrompt, s.glossary, s.msRegion]);
+  const id = engineId(Object.assign({}, s, { engine })) + '|' + await providerFingerprint(s, engine);
   const limit = cacheLimitOf(s);
   if (s.cacheEnabled && s.persistCache) await loadCache();
 
@@ -720,7 +795,7 @@ function normalizeGtx(data, count) {
       return null;
     }
   }
-  if (out.some((t) => !t || /^\[\s*\[/.test(t))) return null;
+  if (out.some((t) => !t.trim() || /^\[\s*\[/.test(t))) return null;
   return out;
 }
 
@@ -1205,6 +1280,7 @@ async function forwardToOffscreen(msg) {
 /* عکس‌هایی که دانلود نمی‌شوند، از اسکرین‌شات بخش دیده‌شده خوانده می‌شوند */
 let lastCapture = 0;
 let captureChain = Promise.resolve();
+const regionOcrCache = new Map();
 function captureVisible(windowId) {
   const p = captureChain.then(async () => {
     const wait = 550 - (Date.now() - lastCapture);
@@ -1218,11 +1294,29 @@ function captureVisible(windowId) {
 
 async function captureAndOcr(msg, sender) {
   if (!sender.tab) throw new Error('no tab');
+  const captureStarted=performance.now();
   const dataUrl = await captureVisible(sender.tab.windowId);
-  return forwardToOffscreen({
-    type: 'ocr', dataUrl, crop: msg.crop, lang: msg.lang,
-    minConf: msg.minConf, quick: msg.quick, quality: msg.quality, noCache: true
-  });
+  const captureMs=performance.now()-captureStarted;
+  let crop=msg.crop, scaleX=1, scaleY=1, shotW=0, shotH=0;
+  if(crop && msg.viewport && Number.isFinite(msg.viewport.width) && msg.viewport.width>0 && Number.isFinite(msg.viewport.height) && msg.viewport.height>0){
+    const bitmap=await createImageBitmap(await (await fetch(dataUrl)).blob());
+    shotW=bitmap.width;shotH=bitmap.height;bitmap.close();
+    scaleX=shotW/msg.viewport.width;scaleY=shotH/msg.viewport.height;
+    const c=msg.crop;
+    if(![c.x,c.y,c.width,c.height].every(Number.isFinite)||c.width<=0||c.height<=0)throw new Error('محدوده‌ی برش نامعتبر است');
+    const l=Math.max(0,Math.floor(c.x*scaleX)),t=Math.max(0,Math.floor(c.y*scaleY));
+    const r=Math.min(shotW,Math.ceil((c.x+c.width)*scaleX)),b=Math.min(shotH,Math.ceil((c.y+c.height)*scaleY));
+    if(r<=l||b<=t||c.x<0||c.y<0||c.x+c.width>msg.viewport.width+1||c.y+c.height>msg.viewport.height+1)throw new Error('برش خارج از محدوده‌ی تصویر است');
+    crop={x:l,y:t,w:r-l,h:b-t};
+  }
+  let cacheKey=null;
+  if(shotW){const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify([dataUrl,crop,msg.lang,msg.minConf,msg.quick,msg.quality])));cacheKey=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');}
+  let result=cacheKey&&regionOcrCache.get(cacheKey);
+  const reused=!!result;
+  if(!result)result=await forwardToOffscreen({type:'ocr',dataUrl,crop,lang:msg.lang,minConf:msg.minConf,quick:msg.quick,quality:msg.quality,noCache:true});
+  if(result&&result.ok&&shotW){Object.assign(result,{captureScaleX:scaleX,captureScaleY:scaleY,screenshotWidth:shotW,screenshotHeight:shotH,captureAt:Date.now(),captureMs,ocrReused:reused});
+    if(!reused&&cacheKey&&result.blocks){if(regionOcrCache.size>=32)regionOcrCache.delete(regionOcrCache.keys().next().value);regionOcrCache.set(cacheKey,structuredClone(result));}}
+  return result;
 }
 
 /* ====================================================================== */
