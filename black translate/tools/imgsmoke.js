@@ -219,7 +219,7 @@ const chromeStub = {
       let res = { ok: true };
       if (msg.type === 'hello') res = { active: true };
       else if (msg.type === 'status') res = { ok: true, active: true };
-      else if (msg.type === 'translate') res = { ok: true, translations: msg.texts.map((t) => 'TT:' + t), engine: 'stub', ms: 3 };
+      else if (msg.type === 'translate') res = { ok: true, translations: msg.texts.map((t) => 'TT:' + t), statuses: msg.texts.map(() => 'success'), engine: 'stub', ms: 3 };
       else if (msg.type === 'capture-ocr') {
         captureCalls++;
         res = captureFail ? { ok: false, error: 'capture blocked (stub)' }

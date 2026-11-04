@@ -65,7 +65,7 @@ var PT_DEFAULTS = {
   /* ---------- تصاویر و OCR ---------- */
   translateImages: true,
   translateBackgroundImages: true,
-  ocrLang: 'auto',
+  ocrLang: 'eng',
   ocrQuality: 'best',         // best = چندمرحله‌ای | fast = یک‌مرحله‌ای
   ocrParallel: 2,
   ocrMinConfidence: 40,
@@ -378,8 +378,13 @@ function ptIsSameAsTarget(text, targetLang, sourceLang) {
 
 /* کد زبان OCR بر اساس تنظیمات */
 function ptOcrLangFor(settings) {
-  if (settings && settings.ocrLang && settings.ocrLang !== 'auto') return settings.ocrLang;
-  return PT_OCR_LANGS[(settings && settings.sourceLang) || 'auto'] || 'eng';
+  var lang = settings && settings.ocrLang;
+  if (!lang || lang === 'auto') return PT_OCR_LANGS[(settings && settings.sourceLang) || 'auto'] || 'eng';
+  var known = Object.values(PT_OCR_LANGS);
+  if (typeof lang !== 'string' || !lang.split('+').every(function (part) { return known.indexOf(part) >= 0; })) {
+    throw new Error('Invalid OCR language');
+  }
+  return lang;
 }
 
 function ptIsRtlLang(lang) {

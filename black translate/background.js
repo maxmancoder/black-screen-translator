@@ -161,7 +161,7 @@ function bucketMap(i) {
   if (!m) { m = new Map(); buckets.set(i, m); }
   return m;
 }
-function cacheKeyOf(id, sl, tl, text) { return id + '|' + sl + '|' + tl + '|' + text; }
+function cacheKeyOf(id, sl, tl, text) { return JSON.stringify(['v2', id, sl, tl, text]); }
 function engineId(s) {
   if (s.engine === 'llm') return 'llm:' + (s.llmModel || '') + '@' + ptNormalizeBaseUrl(s.llmBaseUrl);
   return s.engine;
@@ -429,12 +429,13 @@ async function translateTexts(texts, sl, tl, opts) {
   let warning = opts.warning || null;
   if (!ready) warning = 'کلید/تنظیمات موتور «' + (PT_ENGINE_INFO[s.engine] ? PT_ENGINE_INFO[s.engine].name : s.engine) +
     '» کامل نیست؛ موقتاً با Google رایگان ترجمه می‌شود.';
-  const id = engineId(Object.assign({}, s, { engine }));
+  const id = engineId(Object.assign({}, s, { engine })) + '|' + JSON.stringify([s.deeplFormality, s.libreUrl, s.llmFormat, s.llmTemperature, s.llmMaxTokens, s.llmSystemPrompt, s.glossary, s.msRegion]);
   const limit = cacheLimitOf(s);
   if (s.cacheEnabled && s.persistCache) await loadCache();
 
   const t0 = Date.now();
   const results = new Array(texts.length);
+  const statuses = new Array(texts.length).fill('pending');
   const fresh = [];
   const waiting = [];
   const seen = new Map();
@@ -442,17 +443,17 @@ async function translateTexts(texts, sl, tl, opts) {
 
   for (let i = 0; i < texts.length; i++) {
     const clean = String(texts[i] == null ? '' : texts[i]).replace(/\s+/g, ' ').trim();
-    if (!clean) { results[i] = ''; continue; }
+    if (!clean) { results[i] = ''; statuses[i] = 'success'; continue; }
     const key = cacheKeyOf(id, sl, tl, clean);
     if (s.cacheEnabled) {
       const hit = cacheGet(key);
-      if (hit !== undefined) { results[i] = hit; hits++; diag.cacheHits++; continue; }
+      if (hit !== undefined) { results[i] = hit; statuses[i] = 'success'; hits++; diag.cacheHits++; continue; }
     }
     if (seen.has(key)) { seen.get(key).idx.push(i); continue; }
     const x = { idx: [i], text: clean, key };
     seen.set(key, x);
     const pend = pendingUnique.get(key);
-    if (pend) waiting.push(pend.promise.then((v) => { x.idx.forEach((k) => { results[k] = v == null ? x.text : v; }); }));
+    if (pend) waiting.push(pend.promise.then((v) => { x.idx.forEach((k) => { results[k] = v == null ? x.text : v; statuses[k] = v == null ? 'failed' : 'success'; }); }));
     else { x.defer = defer(); pendingUnique.set(key, x.defer); fresh.push(x); }
   }
 
@@ -462,7 +463,8 @@ async function translateTexts(texts, sl, tl, opts) {
   if (!fresh.length) {
     if (waiting.length) await Promise.all(waiting);
     const ms0 = Date.now() - t0;
-    return { ok: true, translations: results, engine, cached: hits, ms: ms0, warning };
+    if (statuses.includes('failed') && !statuses.includes('success')) return { ok: false, error: 'Translation failed', translations: results, statuses, engine };
+    return { ok: true, translations: results, statuses, engine, cached: hits, ms: ms0, warning };
   }
 
   let out = null, thrown = null;
@@ -475,11 +477,11 @@ async function translateTexts(texts, sl, tl, opts) {
   /* پر کردن نتایج؛ آیتمی که ترجمه نشد متن اصلی خودش را نگه می‌دارد و در کش ذخیره نمی‌شود */
   try {
     fresh.forEach((x, i) => {
-      const failed = !!(out && out.failed && out.failed.has(i)) || (!out && !!thrown);
+      const failed = !out || !!(out.failed && out.failed.has(i)) || typeof out.results[i] !== 'string' || !out.results[i];
       let tr = x.text;
       if (!failed && out && out.results[i] != null && out.results[i] !== '') tr = out.results[i];
-      x.idx.forEach((k) => { results[k] = tr; });
-      if (s.cacheEnabled && !failed && tr !== x.text) cacheSet(x.key, tr, limit);
+      x.idx.forEach((k) => { results[k] = tr; statuses[k] = failed ? 'failed' : 'success'; });
+      if (s.cacheEnabled && !failed && out.engine === engine) cacheSet(x.key, tr, limit);
       if (x.defer) x.defer.resolve(failed ? null : tr);
     });
   } finally {
@@ -498,18 +500,19 @@ async function translateTexts(texts, sl, tl, opts) {
   diag.chars += texts.reduce((a, t) => a + String(t || '').length, 0);
 
   if (out && out.warning) warning = warning ? warning + ' ' + out.warning : out.warning;
+  if (statuses.includes('failed') && !warning) warning = 'Some items could not be translated; original text is shown.';
   const applied = out && out.engine ? out.engine : engine;
 
   if (thrown || (out && !out.okChunks)) {
-    const err = thrown || new Error(out && out.warning ? out.warning : 'ترجمه ناموفق بود');
+    const err = thrown || (out && out.error) || new Error(out && out.warning ? out.warning : 'ترجمه ناموفق بود');
     diag.failures++;
     diag.lastError = ptErrText(err);
     /* اگر هیچ دسته‌ای هم موفق نشد، خطا را بالا می‌بریم (وگرنه فقط هشدار) */
-    if (!out || !out.okChunks) {
-      return { ok: false, error: ptErrText(err), fatal: !!(err && err.fatal), translations: results, engine: applied, warning };
+    if (!statuses.includes('success')) {
+      return { ok: false, error: ptErrText(err), fatal: !!(err && err.fatal), translations: results, statuses, engine: applied, warning };
     }
   }
-  return { ok: true, translations: results, engine: applied, cached: hits, ms, warning };
+  return { ok: true, translations: results, statuses, engine: applied, cached: hits, ms, warning };
 }
 
 /* دسته‌بندی متن‌ها و ترجمه‌ی موازی؛ خطای هر دسته فقط همان دسته را از دست می‌دهد */
@@ -530,13 +533,16 @@ async function runEngineBatches(engine, todo, sl, tl, s, priority) {
     try {
       const r = await translateChunk(engine, ch.items, sl, tl, s);
       if (r.items && r.items.length === ch.items.length) {
-        r.items.forEach((t, k) => { results[ch.start + k] = t; });
+        r.items.forEach((t, k) => {
+          if (typeof t === 'string' && t) results[ch.start + k] = t;
+          else { results[ch.start + k] = ch.items[k]; failedIdx.add(ch.start + k); }
+        });
       } else {
         throw new Error('تعداد ترجمه‌های برگشتی با درخواست نمی‌خواند');
       }
       if (r.engine !== engine) applied = r.engine;
       if (r.note) notes.push(r.note);
-      okChunks++;
+      if (r.items.some((t) => typeof t === 'string' && t)) okChunks++;
     } catch (e) {
       firstErr = firstErr || e;
       ch.items.forEach((t, k) => { results[ch.start + k] = t; failedIdx.add(ch.start + k); });
@@ -625,7 +631,10 @@ async function googleHtmlRequest(items, sl, tl, s) {
   if (!Array.isArray(data) || !Array.isArray(data[0]) || data[0].length !== items.length) {
     throw new Error('Google Translate: پاسخ نامعتبر (تعداد ترجمه‌ها نمی‌خواند)');
   }
-  return data[0].map(unescapeHtml);
+  if (data[0].some((x) => typeof x !== 'string' || !x.trim())) throw new Error('Google Translate: invalid response');
+  const translated = data[0].map(unescapeHtml);
+  if (translated.some((x) => !x)) throw new Error('Google Translate: empty response');
+  return translated;
 }
 
 /* موتور پیش‌فرض: سرویس سریع؛ اگر در دسترس نبود، روش gtx (هم دسته‌ای) */
@@ -665,12 +674,11 @@ async function gtxBatchTranslate(items, sl, tl, s) {
       translated.forEach((t, k) => { out[g.idx[k]] = t; });
     } catch (e) {
       firstErr = firstErr || e;
-      g.idx.forEach((k) => { out[k] = items[k]; });
+      g.idx.forEach((k) => { out[k] = null; });
     }
   }
   if (firstErr && groups.length === 1) throw firstErr;
   if (firstErr) diag.lastError = ptErrText(firstErr);
-  for (let i = 0; i < out.length; i++) if (out[i] == null) out[i] = items[i];
   return out;
 }
 
@@ -690,9 +698,9 @@ async function gtxGet(items, sl, tl, s) {
   const out = new Array(items.length);
   let lastErr = null;
   for (let i = 0; i < items.length; i++) {
-    try { out[i] = await gtxOne(items[i], sl, tl, s); } catch (e) { lastErr = lastErr || e; out[i] = items[i]; }
+    try { out[i] = await gtxOne(items[i], sl, tl, s); } catch (e) { lastErr = lastErr || e; out[i] = null; }
   }
-  if (lastErr && out.every((t, i) => t === items[i])) throw lastErr;
+  if (lastErr && out.every((t) => t == null)) throw lastErr;
   return out;
 }
 
@@ -729,8 +737,11 @@ async function gtxOne(text, sl, tl, s) {
   const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=' +
     encodeURIComponent(sl) + '&tl=' + encodeURIComponent(tl) + '&q=' + encodeURIComponent(text);
   const data = await request(url, {}, { service: 'Google Translate', timeout: 20000, retries: 2 });
-  if (!Array.isArray(data) || !Array.isArray(data[0])) return text;
-  return data[0].map((seg) => (seg && seg[0]) || '').join('') || text;
+  if (!Array.isArray(data) || !Array.isArray(data[0]) || !data[0].length ||
+      data[0].some((seg) => !Array.isArray(seg) || typeof seg[0] !== 'string')) throw new Error('Google Translate: invalid response');
+  const translated = data[0].map((seg) => seg[0]).join('');
+  if (!translated) throw new Error('Google Translate: empty response');
+  return translated;
 }
 
 /* ====================================================================== */
@@ -881,15 +892,15 @@ async function llmChunk(items, sl, tl, s, depth) {
   } catch (e) { err = e; }
   if (items.length === 1) {
     if (depth < 2 && err) return [await llmSingle(items[0], sl, tl, s, depth + 1)];
-    return items;
+    return [null];
   }
-  if (depth >= 4) return items;
+  if (depth >= 4) return items.map(() => null);
   const mid = Math.ceil(items.length / 2);
   const left = await llmChunk(items.slice(0, mid), sl, tl, s, depth + 1);
   const right = await llmChunk(items.slice(mid), sl, tl, s, depth + 1);
   const out = left.concat(right);
   if (out.length === items.length) return out;
-  return items;
+  return items.map(() => null);
 }
 
 async function llmSingle(text, sl, tl, s, depth) {
@@ -897,7 +908,7 @@ async function llmSingle(text, sl, tl, s, depth) {
     const parsed = await llmRequest([text], sl, tl, Object.assign({}, s, { llmFormat: 'delimiter' }));
     if (parsed && parsed[0]) return parsed[0];
   } catch (e) { /* متن اصلی */ }
-  return text;
+  return null;
 }
 
 /* یک درخواست واقعی به سرویس AI */
@@ -1169,6 +1180,7 @@ async function ensureOffscreen() {
 async function forwardToOffscreen(msg) {
   await ensureOffscreen();
   const s = await getSettings();
+  msg = Object.assign({}, msg, { lang: ptOcrLangFor({ ocrLang: msg.lang || s.ocrLang, sourceLang: s.sourceLang }) });
   if (msg.type === 'ocr-warmup') {
     return chrome.runtime.sendMessage(Object.assign({}, msg, {
       target: 'offscreen', quality: s.ocrQuality, parallel: s.ocrParallel

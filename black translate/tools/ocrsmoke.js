@@ -198,6 +198,18 @@ async function run() {
   eq('بعد از کرش Worker، OCR دوباره کار می‌کند', !!(healed && healed.ok), true);
   check('Worker تازه ساخته شد', createdWorkers >= 2, 'created=' + createdWorkers);
 
+  /* Regression checks on actual offscreen helpers (worker is mocked). */
+  eq('English fast uses local model', sandbox.workerOptions('eng', 'fast').langPath, 'chrome-extension://abc/lib/lang');
+  const tiny = { width: 2, height: 2, data: new Uint8ClampedArray([255,255,255,255, 255,255,255,255, 254,254,254,255, 255,255,255,255]) };
+  eq('low contrast pixel is not discarded', sandbox.looksTextless(tiny), false);
+  const words = [{text:'Hello', confidence:95, bbox:{x0:0,y0:0,x1:40,y1:12}},
+    {text:'world', confidence:5, bbox:{x0:43,y0:0,x1:80,y1:12}}];
+  eq('low confidence word retained within confident line', sandbox.extractLines({lines:[{words}]}, 40)[0].text, 'Hello world');
+  const invalid = await ocr({type:'ocr', dataUrl:dataUrlOf(99), lang:'../../bad', noCache:true});
+  eq('invalid language fails', invalid.ok, false);
+  const autoTest = await ocr({type:'ocr-selftest', lang:'auto'});
+  eq('auto selftest uses English', autoTest.lang, 'eng');
+
   /* --- ۷) مسیر «آزمایش OCR» پنل --- */
   const st = await ocr({ type: 'ocr-selftest', lang: 'eng', quality: 'best' });
   eq('آزمایش OCR موفق است', !!(st && st.ok), true);

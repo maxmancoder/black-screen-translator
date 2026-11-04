@@ -30,11 +30,11 @@ function workerOptions(lang, quality) {
     cachePath: 'pt-' + quality,
     errorHandler: (e) => console.warn('[PT/OCR] worker error:', e)
   };
-  if (quality === 'fast') {
+  if (lang === 'eng') {
+    opts.langPath = chrome.runtime.getURL('lib/lang');
+  } else if (quality === 'fast') {
     opts.langPath = 'https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main';
     opts.gzip = false;
-  } else if (lang === 'eng') {
-    opts.langPath = chrome.runtime.getURL('lib/lang');   // مدل انگلیسی داخل افزونه
   } else {
     opts.langPath = 'https://tessdata.projectnaptha.com/4.0.0';
   }
@@ -58,6 +58,7 @@ async function createWorker(lang, quality) {
     liveWorkers++;
     return w;
   } catch (e) {
+    if (mine) { try { await mine.terminate(); } catch (_) {} }
     noteOcrError(e, 'createWorker ' + lang + '/' + quality);
     throw e;
   }
@@ -129,6 +130,8 @@ function trimPools(keepKey) {
 }
 
 async function acquire(lang, quality, parallel) {
+  if (!lang || lang === 'auto') lang = 'eng';
+  if (!/^[a-z]{3}(?:_[a-z]+)?(?:\+[a-z]{3}(?:_[a-z]+)?)*$/.test(lang)) throw new Error('Invalid OCR language');
   const key = lang + '|' + quality;
   let pool = pools.get(key);
   if (!pool) { pool = { workers: [], idle: [], waiting: [], creating: 0, last: 0 }; pools.set(key, pool); }
@@ -191,7 +194,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 /* آزمایش OCR با تصویر ساخته‌شده در همان صفحه‌ی offscreen — برای دیدن خطای دقیق موتور */
 async function ocrSelfTest(msg) {
-  const lang = msg.lang || 'eng';
+  const lang = !msg.lang || msg.lang === 'auto' ? 'eng' : msg.lang;
   const quality = msg.quality || 'best';
   const t0 = Date.now();
   const c = document.createElement('canvas');
@@ -219,7 +222,8 @@ async function ocrSelfTest(msg) {
 async function loadBlob(msg) {
   if (msg.dataUrl) return (await fetch(msg.dataUrl)).blob();
   let res;
-  try { res = await fetch(msg.src, { credentials: 'include' }); } catch (e) { res = await fetch(msg.src); }
+  try { res = await fetch(msg.src, { credentials: 'include' }); } catch (e) { /* try without credentials */ }
+  if (!res || !res.ok) res = await fetch(msg.src, { credentials: 'omit' });
   if (!res.ok) throw new Error('دانلود تصویر ناموفق بود: HTTP ' + res.status);
   return res.blob();
 }
@@ -249,28 +253,22 @@ async function decodeImage(blob) {
 
 /* تصویر تقریباً یک‌رنگ = بدون متن → OCR لازم نیست */
 function looksTextless(pixels) {
+  // Only a truly uniform image is safe to skip: sparse and low-contrast
+  // text can be missed by sampled variance estimates.
   const d = pixels.data;
-  let n = 0, sum = 0, sum2 = 0, min = 255, max = 0;
-  const step = Math.max(4, Math.floor(Math.sqrt(pixels.width * pixels.height) / 48)) * 4;
-  for (let i = 0; i < d.length; i += step) {
-    const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-    n++; sum += g; sum2 += g * g;
-    if (g < min) min = g;
-    if (g > max) max = g;
+  for (let i = 4; i < d.length; i += 4) {
+    if (d[i] !== d[0] || d[i + 1] !== d[1] || d[i + 2] !== d[2]) return false;
   }
-  if (!n) return true;
-  const mean = sum / n;
-  const variance = Math.max(0, sum2 / n - mean * mean);
-  const contrast = max - min;
-  return contrast < 20 || variance < 12;
+  return true;
 }
 
 async function doOcr(msg) {
   const t0 = Date.now();
+  msg = Object.assign({}, msg, { lang: !msg.lang || msg.lang === 'auto' ? 'eng' : msg.lang });
   const quality = msg.quality || 'best';
   const maxDim = msg.maxDim || 1800;
-  const cacheKey = msg.noCache ? null : [msg.src || ('data:' + (msg.dataUrl || '').length + (msg.dataUrl || '').slice(-80)),
-    msg.lang, msg.minConf, quality, msg.invert, !!msg.quick, maxDim].join('|');
+  const cacheKey = (msg.noCache || !msg.src || msg.crop) ? null : [msg.src || ('data:' + (msg.dataUrl || '').length + (msg.dataUrl || '').slice(-80)),
+    msg.lang, msg.minConf, quality, msg.invert, !!msg.quick, msg.skipBlank, maxDim].join('|');
   if (cacheKey && ocrCache.has(cacheKey)) {
     const hit = ocrCache.get(cacheKey);
     return Object.assign({}, hit, { cached: true, ms: 0 });
@@ -364,8 +362,11 @@ async function doOcr(msg) {
       }
       await pass(inv, '3');
     }
+  } catch (e) {
+    workerStuck = true;
+    throw e;
   } finally {
-    if (workerStuck || worker.__ptDead) { dropWorker(pool, worker); terminateWorker(worker); }
+    if (workerStuck || worker.__ptDead) { retireWorker(worker, msg.lang, quality); }
     else release(pool, worker);
   }
 
@@ -398,9 +399,10 @@ function storeCache(key, value) {
 /* خطوط معتبر را با حذف کلمات کم‌اطمینان استخراج می‌کند */
 function extractLines(data, minConf) {
   const out = [];
+  minConf = Number.isFinite(minConf) ? minConf : 40;
   for (const line of (data.lines || [])) {
     const words = (line.words || [])
-      .filter((w) => w.confidence >= Math.max(15, minConf - 20) && w.text.trim())
+      .filter((w) => w.bbox && w.text && w.text.trim() && Number.isFinite(w.confidence) && w.confidence >= 0)
       .sort((a, b) => a.bbox.x0 - b.bbox.x0);
     if (!words.length) continue;
     /* Tesseract گاهی دو متن جدا (دکمه و پاورقی) را یک خط می‌گیرد؛ با فاصله/اندازه‌ی حروف می‌شکنیم */
