@@ -280,10 +280,13 @@ async function doOcr(msg) {
   let pixels = null;
   try {
     const crop = msg.crop
-      ? { x: Math.max(0, msg.crop.x), y: Math.max(0, msg.crop.y), w: msg.crop.w, h: msg.crop.h }
+      ? { x: msg.crop.x, y: msg.crop.y, w: msg.crop.w, h: msg.crop.h }
       : { x: 0, y: 0, w: dec.w, h: dec.h };
-    crop.w = Math.min(crop.w, dec.w - crop.x);
-    crop.h = Math.min(crop.h, dec.h - crop.y);
+    if (![crop.x,crop.y,crop.w,crop.h].every(Number.isFinite) || crop.x < 0 || crop.y < 0 || crop.w <= 0 || crop.h <= 0 ||
+        crop.x + crop.w > dec.w + 1 || crop.y + crop.h > dec.h + 1) throw new Error('محدوده‌ی برش خارج از تصویر است');
+    crop.x = Math.floor(crop.x); crop.y = Math.floor(crop.y);
+    crop.w = Math.min(Math.ceil(crop.w), dec.w - crop.x);
+    crop.h = Math.min(Math.ceil(crop.h), dec.h - crop.y);
     natW = crop.w; natH = crop.h;
     if (!natW || !natH || natW < 8 || natH < 8) throw new Error('ابعاد تصویر نامعتبر است');
 

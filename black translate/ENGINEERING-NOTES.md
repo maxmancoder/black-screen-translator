@@ -8,6 +8,10 @@ Translation results have per-item `statuses`: `success`, `failed`, or `pending` 
 
 Only exactly uniform images are skipped as blank. This avoids guessing that low-contrast or sparse images are textless, at the cost of more OCR. Cropped and data URL images bypass the OCR cache to avoid collisions. The current size cap, PSM selection and geometric grouping remain heuristic; long images, multicolumn text, rotated/perspective text, and comics need further measured evaluation. No tiling or automatic deskew was added. Remote model loading, worker creation and each OCR pass can fail; failures are reported rather than counted as recognized text.
 
+## Mouse-selected visual regions
+
+The popup's “انتخاب محدوده با موس” action activates a transient top-frame mode. It suspends the normal DOM scan, draws a pointer-driven rectangle in the content script Shadow DOM, and sends a single `captureVisibleTab` request with a DPR-scaled crop to the existing offscreen OCR pipeline. OCR blocks are translated as one existing batch and rendered from crop-relative pixels into document coordinates; this captures visible CSS backgrounds, canvas, and cross-origin iframe pixels without reading their DOM. It remains a visual OCR flow, so selectable DOM text is not extracted directly. Use the same popup action to select another region; the region-only session state is not persisted across navigation. Screenshot/OCR timings and a comparative speed benchmark have not yet been added, so no performance gain is claimed. The selection/crop path needs manual Chrome validation across browser zoom and DPR values.
+
 ## Verification
 
 Run `node tools/selftest.js`, `node tools/regression.js`, `node tools/domsmoke.js`, `node tools/imgsmoke.js`, and `node tools/ocrsmoke.js`. These use mocks; they do not measure real OCR accuracy or make Google requests.

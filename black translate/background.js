@@ -73,6 +73,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'hello':
       reply(helloState(sender));
       return true;
+    case 'begin-region':
+      reply(beginRegion(msg.tabId));
+      return true;
     case 'toggle-tab':
       reply(setTabState(msg.tabId || (sender.tab && sender.tab.id), msg.action || 'toggle'));
       return true;
@@ -105,6 +108,13 @@ async function helloState(sender) {
 }
 
 const lastToggleAt = new Map();
+async function beginRegion(tabId) {
+  if (!tabId) return { ok: false, error: 'تب فعالی پیدا نشد' };
+  // Region mode is transient: persist inactive so navigation cannot start a page scan.
+  await chrome.storage.session.set({ [tabKey(tabId)]: false });
+  return broadcast(tabId, { type: 'begin-region' });
+}
+
 async function setTabState(tabId, action) {
   if (!tabId) return { ok: false, error: 'تب فعالی پیدا نشد' };
   let next;

@@ -450,7 +450,10 @@ async function tabStatus() {
 async function toggleTab() {
   const tab = await activeTab();
   if (!tab) return null;
-  try { return await chrome.runtime.sendMessage({ type: 'toggle-tab', tabId: tab.id, action: 'toggle' }); }
+  try {
+    const st = await chrome.tabs.sendMessage(tab.id, { type:'status' }, { frameId:0 }).catch(() => null);
+    return await chrome.runtime.sendMessage({ type: 'toggle-tab', tabId: tab.id, action: st && st.regionMode ? 'stop' : 'toggle' });
+  }
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 }
 
@@ -564,6 +567,13 @@ async function init() {
   settings = Object.assign({}, PT_DEFAULTS, await chrome.storage.sync.get(PT_DEFAULTS));
   renderSettings();
   bindSettings();
+
+  $('regionBtn').onclick = async () => {
+    const tab = await activeTab();
+    if (!tab) return;
+    const r = await chrome.runtime.sendMessage({ type: 'begin-region', tabId: tab.id });
+    if (r && !r.ok) { $('error').textContent = r.error || 'امکان انتخاب محدوده نیست'; $('error').classList.remove('hidden'); }
+  };
 
   $('startBtn').onclick = async () => {
     const res = await toggleTab();

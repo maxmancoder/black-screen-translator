@@ -52,6 +52,7 @@
   let startedAt = 0, lastRate = 0, lastRateAt = 0, lastDoneCount = 0;
   const localCache = new Map();
   let imgRectCache = new WeakMap();  // el -> {at, dist}
+  let regionMode = false, regionUi = null, regionSession = 0;
 
   const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'INPUT', 'SELECT', 'OPTION',
     'PRE', 'CANVAS', 'IFRAME', 'OBJECT', 'EMBED', 'VIDEO', 'AUDIO', 'MATH', 'SAMP', 'TEMPLATE',
@@ -150,8 +151,12 @@
   /* ============================ پیام‌ها ============================ */
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg || !msg.type) return false;
-    if (msg.type === 'apply-state') {
-      if (msg.active && !active) startWhenReady();
+    if (msg.type === 'begin-region') {
+      beginRegionMode();
+      sendResponse({ ok: true });
+    } else if (msg.type === 'apply-state') {
+      if (msg.active && regionMode) { stop(); startWhenReady(); }
+      else if (msg.active && !active) startWhenReady();
       else if (!msg.active && active) stop();
       sendResponse(status());
     } else if (msg.type === 'status') {
@@ -164,7 +169,7 @@
 
   function status() {
     return Object.assign({
-      ok: true, active, waitingCapture: imageQueue.filter((j) => j.mode === 'capture').length,
+      ok: true, active, regionMode, waitingCapture: imageQueue.filter((j) => j.mode === 'capture').length,
       scope: settings.scope, pending: pending.length, inflight, rate: lastRate
     }, stats);
   }
@@ -180,6 +185,18 @@
   }
 
   /* ============================ شروع / توقف ============================ */
+  function beginRegionMode() {
+    if (!IS_TOP || !document.body) return;
+    if (regionMode && active) { session++; regionSession=session; openRegionSelector(); return; }
+    if (active) stop();
+    active = true; regionMode = true; session++; regionSession = session;
+    startedAt = Date.now(); errorShown = false;
+    stats = { textTotal: 0, textDone: 0, textSkipped: 0, imgTotal: 0, imgDone: 0, imgFail: 0, scanning: false };
+    createHost();
+    showToast('محدوده‌ای را با موس انتخاب کنید؛ Enter برای OCR و Escape برای لغو.');
+    openRegionSelector();
+  }
+
   function start() {
     if (!document.body || active) return;
     if (!IS_TOP && (window.innerWidth < 60 || window.innerHeight < 30)) return;  // فریم‌های تبلیغاتی
@@ -202,7 +219,79 @@
     }
   }
 
+  function openRegionSelector() {
+    if (!shadow || !regionMode) return;
+    if (regionUi && regionUi.cleanup) regionUi.cleanup();
+    const veil = document.createElement('div');
+    veil.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:auto;cursor:crosshair;background:rgba(15,23,42,.24);touch-action:none;user-select:none;';
+    const box = document.createElement('div');
+    box.style.cssText = 'position:absolute;display:none;border:2px solid #38bdf8;background:rgba(56,189,248,.12);box-sizing:border-box;pointer-events:none;';
+    const label = document.createElement('div');
+    label.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);background:#111827;color:white;padding:7px 12px;border-radius:8px;font:14px sans-serif;direction:rtl;white-space:nowrap;';
+    label.textContent = 'برای انتخاب بکشید؛ Enter تأیید، Escape لغو';
+    const actions = document.createElement('div');
+    actions.style.cssText = 'position:fixed;top:52px;left:50%;transform:translateX(-50%);display:flex;gap:8px;direction:rtl;';
+    const mk = (text) => { const b = document.createElement('button'); b.textContent = text; b.style.cssText = 'padding:7px 12px;border:0;border-radius:6px;background:#fff;color:#111827;font:bold 13px sans-serif;cursor:pointer;'; return b; };
+    const confirm = mk('تأیید و ترجمه'), cancel = mk('لغو'), again = mk('انتخاب محدوده جدید'), stopBtn = mk('توقف ترجمه محدوده');
+    actions.append(confirm, again, stopBtn, cancel);
+    veil.append(box, label, actions); shadow.appendChild(veil);
+    let start = null, chosen = null, pointerId = null;
+    const showBox = (a, b) => {
+      const l = Math.min(a.x,b.x), t = Math.min(a.y,b.y), w = Math.abs(a.x-b.x), h = Math.abs(a.y-b.y);
+      Object.assign(box.style, { display:'block', left:l+'px', top:t+'px', width:w+'px', height:h+'px' });
+      chosen = { left:l, top:t, width:w, height:h, right:l+w, bottom:t+h };
+      label.textContent = `محدوده ${Math.round(w)} × ${Math.round(h)} پیکسل — Enter برای تأیید، Escape برای لغو`;
+    };
+    const down = (e) => { if (e.target.closest('button')) return; e.preventDefault(); start = {x:e.clientX,y:e.clientY}; pointerId=e.pointerId; veil.setPointerCapture(e.pointerId); showBox(start,start); };
+    const move = (e) => { if (start && e.pointerId === pointerId) { e.preventDefault(); showBox(start,{x:e.clientX,y:e.clientY}); } };
+    const up = (e) => { if (start && e.pointerId === pointerId) { showBox(start,{x:e.clientX,y:e.clientY}); start=null; pointerId=null; } };
+    const key = (e) => { if (!regionMode) return; if (e.key === 'Escape') { e.preventDefault(); stop(); } else if (e.key === 'Enter') { e.preventDefault(); confirmRegion(); } };
+    const cleanup = () => { veil.removeEventListener('pointerdown',down); veil.removeEventListener('pointermove',move); veil.removeEventListener('pointerup',up); window.removeEventListener('keydown',key,true); veil.remove(); };
+    const confirmRegion = () => { if (!chosen || chosen.width < 12 || chosen.height < 12 || !Number.isFinite(chosen.left+chosen.top+chosen.width+chosen.height)) { label.textContent='محدوده باید حداقل ۱۲ در ۱۲ پیکسل باشد'; return; } cleanup(); regionUi=null; processSelectedRegion(chosen); };
+    confirm.onclick = confirmRegion;
+    cancel.onclick = () => stop();
+    again.onclick = () => openRegionSelector();
+    stopBtn.onclick = () => stop();
+    veil.addEventListener('pointerdown',down); veil.addEventListener('pointermove',move); veil.addEventListener('pointerup',up);
+    window.addEventListener('keydown',key,true);
+    regionUi = { cleanup, chosen: () => chosen };
+  }
+
+  async function processSelectedRegion(rect) {
+    const mine = session, dpr = window.devicePixelRatio || 1;
+    const x = Math.max(0, Math.floor(rect.left)), y = Math.max(0, Math.floor(rect.top));
+    const right = Math.min(window.innerWidth, Math.ceil(rect.right)), bottom = Math.min(window.innerHeight, Math.ceil(rect.bottom));
+    if (right-x < 12 || bottom-y < 12) { showToast('محدوده‌ی انتخاب‌شده معتبر نیست.'); openRegionSelector(); return; }
+    showToast('در حال دریافت محدوده‌ی انتخاب‌شده…');
+    let res;
+    const hostVisibility = host && host.style.visibility;
+    if (host) host.style.visibility='hidden';
+    try {
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      res = await sendTimed({ type:'capture-ocr', lang:ocrLang(), minConf:settings.ocrMinConfidence,
+        quality:'fast', quick:true, crop:{x:x*dpr,y:y*dpr,w:(right-x)*dpr,h:(bottom-y)*dpr} }, ocrTimeoutMs());
+    } catch (e) { res = null; }
+    finally { if (host) host.style.visibility=hostVisibility || ''; }
+    if (!active || !regionMode || mine !== session) return;
+    if (!res || !res.ok) { showToast('گرفتن تصویر یا OCR محدوده ناموفق بود.'); openRegionSelector(); return; }
+    if (!res.blocks || !res.blocks.length) { showToast('متنی در محدوده پیدا نشد. محدوده‌ی دیگری را انتخاب کنید.'); openRegionSelector(); return; }
+    const texts = res.blocks.map((b) => b.text);
+    showToast(`تعداد متن‌های شناسایی‌شده: ${texts.length}؛ در حال ترجمه…`);
+    const translated = await sendMessage({ type:'translate', texts, sl:settings.sourceLang, tl:settings.targetLang, priority:true });
+    if (!active || !regionMode || mine !== session) return;
+    if (!translated || !translated.translations) { showToast('ترجمه‌ی محدوده ناموفق بود.'); openRegionSelector(); return; }
+    const scrollX = window.scrollX, scrollY = window.scrollY;
+    res.blocks.forEach((b,i) => {
+      const bb=b.bbox, left=x+bb.x0/dpr, top=y+bb.y0/dpr, right=x+bb.x1/dpr, bottom=y+bb.y1/dpr;
+      const item={type:'image', el:document.documentElement, text:b.text, translation:translated.translations[i], done:true, rect:{left,top,right,bottom,width:right-left,height:bottom-top}, regionRect:true, fixed:false, docTop:top+scrollY, docBottom:bottom+scrollY, docLeft:left+scrollX, docRight:right+scrollX, lineHeight:(b.lineHeight||bottom-top)/dpr, bg:b.bg,fg:b.fg,font:{size:16,family:'',weight:'600',style:'normal',color:b.fg,align:'center'},clips:[]};
+      items.push(item); item.needsRender=true;
+    });
+    scheduleRender(); showToast('ترجمه‌ی محدوده تکمیل شد. برای انتخاب دوباره از دکمه‌ی افزونه استفاده کنید.');
+  }
+
   function stop() {
+    if (regionUi && regionUi.cleanup) regionUi.cleanup();
+    regionUi = null; regionMode = false; regionSession = 0;
     active = false;
     session++;
     stopObservers();
@@ -1033,6 +1122,11 @@
     if (item.type === 'text') {
       if (item.nodes ? item.nodes.some((n) => !n.isConnected) : !item.el.isConnected) return { remove: true };
       rect = textRect(item);
+    } else if (item.regionRect) {
+      rect = { left:item.docLeft-window.scrollX, top:item.docTop-window.scrollY,
+        right:item.docRight-window.scrollX, bottom:item.docBottom-window.scrollY,
+        width:item.docRight-item.docLeft, height:item.docBottom-item.docTop };
+      item.rect=rect;
     } else {
       if (!item.el.isConnected) return { remove: true };
       rect = imageBlockRect(item);
