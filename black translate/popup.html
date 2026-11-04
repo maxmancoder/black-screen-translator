@@ -226,6 +226,9 @@
 
       <label>مهلت خواندن هر عکس (ثانیه)<input type="number" id="ocrTimeout" min="5" max="300" step="5"></label>
 
+      <button type="button" class="secondary" id="ocrTestBtn">🔬 آزمایش OCR روی تصویر نمونه</button>
+      <div id="ocrTestResult" class="test hidden"></div>
+
       <label class="slider">حداقل اطمینان OCR: <b id="confVal"></b>%
         <input type="range" id="ocrMinConfidence" min="10" max="90" step="5">
       </label>

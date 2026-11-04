@@ -30,6 +30,7 @@ class FakeCtx {
   constructor(canvas) { this.canvas = canvas; this.filter = 'none'; this.imageSmoothingQuality = ''; this.fillStyle = ''; }
   fillRect() {}
   drawImage() {}
+  fillText() {}
   getImageData(x, y, w, h) {
     const data = new Uint8ClampedArray(Math.max(1, w * h) * 4);
     /* الگوی پرسروصدا تا looksTextless رد نکند */
@@ -44,6 +45,7 @@ class FakeCtx {
 class FakeCanvas {
   constructor() { this.width = 300; this.height = 150; this.__ctx = null; }
   getContext() { if (!this.__ctx) this.__ctx = new FakeCtx(this); return this.__ctx; }
+  toDataURL() { return 'data:image/png;base64,SELFTEST'; }
 }
 
 /* ------------------------------ Tesseract جعلی ------------------------------ */
@@ -77,12 +79,15 @@ function fakeWorker(id) {
   };
 }
 
+const createdList = [];
 const Tesseract = {
   createWorker: async (lang, oem, opts) => {
     createdWorkers++;
     if (createdWorkers > workerFailAfter) throw new Error('worker creation failed (stub)');
-    workerLog.length; // no-op
-    return fakeWorker('w' + createdWorkers + ':' + lang);
+    const w = fakeWorker('w' + createdWorkers + ':' + lang);
+    w.__fireError = (msg) => opts && opts.errorHandler && opts.errorHandler(new Error(msg));
+    createdList.push(w);
+    return w;
   }
 };
 
@@ -183,6 +188,25 @@ async function run() {
   );
   eq('زبانی که worker هایش بسته شده‌اند دوباره کار می‌کند', revived.map((r) => !!(r && r.ok)), revived.map(() => true));
   check('worker مرده بسته شد', terminatedWorkers > 0, 'terminated=' + terminatedWorkers);
+
+  /* --- ۶) کرش Worker (خطای wasm): درخواست بعدی باید با Worker تازه کار کند --- */
+  createdWorkers = 0; createdList.length = 0;
+  const before = await ocr({ type: 'ocr', dataUrl: dataUrlOf(50), lang: 'ell', minConf: 40, noCache: true });
+  eq('قبل از کرش، OCR موفق است', !!(before && before.ok), true);
+  createdList[0].__fireError('RuntimeError: memory access out of bounds');
+  const healed = await ocr({ type: 'ocr', dataUrl: dataUrlOf(51), lang: 'ell', minConf: 40, noCache: true });
+  eq('بعد از کرش Worker، OCR دوباره کار می‌کند', !!(healed && healed.ok), true);
+  check('Worker تازه ساخته شد', createdWorkers >= 2, 'created=' + createdWorkers);
+
+  /* --- ۷) مسیر «آزمایش OCR» پنل --- */
+  const st = await ocr({ type: 'ocr-selftest', lang: 'eng', quality: 'best' });
+  eq('آزمایش OCR موفق است', !!(st && st.ok), true);
+  check('آزمایش OCR متن را برمی‌گرداند', !!(st && st.text && st.text.length > 0), JSON.stringify(st && st.text));
+  workerFailAfter = createdWorkers;
+  const stErr = await ocr({ type: 'ocr-selftest', lang: 'tur', quality: 'best' });
+  workerFailAfter = Infinity;
+  eq('آزمایش OCR خطا را گزارش می‌کند', stErr && stErr.ok === false, true);
+  check('پیام خطا خالی نیست', !!String(stErr && stErr.error).length, String(stErr && stErr.error));
 }
 
 /* اگر یک درخواست OCR بی‌پاسخ بماند، process بی‌صدا خارج می‌شود → نگهبان سراسری */

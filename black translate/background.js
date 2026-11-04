@@ -64,6 +64,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return false;
     case 'ocr':
     case 'ocr-warmup':
+    case 'ocr-selftest':
       reply(forwardToOffscreen(msg));
       return true;
     case 'capture-ocr':

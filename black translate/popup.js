@@ -171,6 +171,34 @@ function renderSettings() {
   $('skipSelectors').value = settings.skipSelectors || '';
 }
 
+/* آزمایش OCR: همان مسیر افزونه (offscreen → Tesseract) روی یک تصویر نمونه.
+   خطای واقعی موتور (کرش wasm، مدل خراب، نداشتن دسترسی به مدل زبان) اینجا دیده می‌شود. */
+async function runOcrTest() {
+  const btn = $('ocrTestBtn'), out = $('ocrTestResult');
+  btn.disabled = true;
+  out.className = 'test'; out.classList.remove('hidden');
+  out.textContent = '⏳ در حال خواندن تصویر نمونه… (بار اول ممکن است چند ثانیه طول بکشد)';
+  let res;
+  try {
+    res = await chrome.runtime.sendMessage({ type: 'ocr-selftest', lang: settings.ocrLang });
+  } catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+  btn.disabled = false;
+  if (res && res.ok && res.blocks > 0) {
+    out.className = 'test ok';
+    out.innerHTML = `✅ OCR کار می‌کند — زبان <b>${escapeHtml(res.lang)}</b>، ${ptFormatMs(res.ms)}<br>` +
+      `خوانده شد: <b>${escapeHtml(res.text)}</b>`;
+  } else if (res && res.ok) {
+    out.className = 'test warn';
+    out.innerHTML = `⚠️ موتور اجرا شد ولی متنی پیدا نکرد (${ptFormatMs(res.ms)}). ` +
+      `اگر مدل زبان <b>${escapeHtml(res.lang)}</b> دانلود نشده باشد این اتفاق می‌افتد.`;
+  } else {
+    out.className = 'test bad';
+    out.innerHTML = '❌ خطای OCR:<br><b>' + escapeHtml((res && res.error) || 'پاسخی دریافت نشد') + '</b>' +
+      '<br><small>اگر خطا از <code>tesseract-core</code> است: افزونه را Reload کنید، زبان OCR را روی انگلیسی بگذارید، ' +
+      '«کیفیت OCR» را «سریع» و «پردازش هم‌زمان» را ۱ بگذارید.</small>';
+  }
+}
+
 /* ---------------------------------- رویدادها ---------------------------------- */
 function num(id, key, min, max, def) {
   $(id).onchange = (e) => {
@@ -329,6 +357,7 @@ function bindSettings() {
   num('ocrMaxDim', 'ocrMaxDim', 600, 4000, 1800);
   num('ocrCacheLimit', 'ocrCacheLimit', 50, 2000, 400);
   num('ocrTimeout', 'ocrTimeout', 5, 300, 45);
+  $('ocrTestBtn').onclick = runOcrTest;
   $('ocrMinConfidence').oninput = (e) => { $('confVal').textContent = e.target.value; };
   $('ocrMinConfidence').onchange = (e) => save({ ocrMinConfidence: +e.target.value });
 
