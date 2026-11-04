@@ -27,6 +27,8 @@ function eq(name, actual, expected) {
 /* ---------------------- محیط شبیه‌سازی‌شده ---------------------- */
 const noop = () => {};
 const asyncEmpty = async () => ({});
+const localStore = {};
+const storageArea = {get:async (key)=>{if(key==null)return {...localStore};if(typeof key==='string')return key in localStore?{[key]:localStore[key]}:{};const out={};for(const k of key||[])if(k in localStore)out[k]=localStore[k];return out;},set:async(v)=>Object.assign(localStore,v),remove:async(k)=>{for(const x of [].concat(k))delete localStore[x];}};
 const chromeStub = {
   runtime: {
     onMessage: { addListener: noop }, onInstalled: { addListener: noop },
@@ -37,17 +39,19 @@ const chromeStub = {
   },
   storage: {
     sync: { get: asyncEmpty, set: asyncEmpty, remove: asyncEmpty },
-    local: { get: asyncEmpty, set: asyncEmpty, remove: asyncEmpty, getBytesInUse: async () => 0 },
+    local: Object.assign(storageArea,{getBytesInUse:async()=>0}),
     session: { get: asyncEmpty, set: asyncEmpty, remove: asyncEmpty },
     onChanged: { addListener: noop }
   },
   commands: { onCommand: { addListener: noop } },
-  tabs: { query: async () => [], sendMessage: async () => ({}), onRemoved: { addListener: noop }, captureVisibleTab: async () => '' },
+  tabs: { query: async () => [], get: async () => ({id:1,url:'https://example.test/path'}), sendMessage: async () => ({}), onRemoved: { addListener: noop }, captureVisibleTab: async () => '' },
   scripting: { executeScript: asyncEmpty },
   offscreen: { createDocument: asyncEmpty }
 };
 
 const sandbox = {
+  crypto: require('crypto').webcrypto,
+  TextEncoder,
   console, setTimeout, clearTimeout, setInterval, clearInterval, Promise, JSON, Math, Date,
   URL, AbortController, Set, Map, WeakMap, WeakSet, RegExp, Error, String, Number, Array, Object,
   isFinite, isNaN, parseInt, parseFloat, Boolean, Symbol, TextEncoder, structuredClone,
@@ -69,11 +73,38 @@ load('background.js');
 
 (async () => {
   eq('OCR default', sandbox.PT_DEFAULTS.ocrLang, 'eng');
+  const savedRegion={xRatio:.65,yRatio:.1,widthRatio:.3,heightRatio:.8};
+  ok('normalized region valid',sandbox.validRegion(savedRegion));
+  ok('region overflow invalid',!sandbox.validRegion({...savedRegion,xRatio:.8}));
+  const saved=await sandbox.saveRegionFor({tab:{url:'https://example.test/a?q=private'}},savedRegion);
+  ok('origin region saved',saved.ok);
+  const restored=await sandbox.regionConfigFor({tab:{url:'https://example.test/other/path#fragment'}});
+  eq('same-origin path restores region',restored.config.region,savedRegion);
+  const fullMode=await sandbox.setRegionMode(1,'full');
+  ok('full mode persisted',fullMode.ok&&fullMode.config.mode==='full');
+  eq('full mode preserves region',fullMode.config.region,savedRegion);
+  const regionModeAgain=await sandbox.setRegionMode(1,'region');
+  ok('region reenabled without reselection',regionModeAgain.ok&&regionModeAgain.config.region.xRatio===savedRegion.xRatio);
+  const foreign=await sandbox.regionConfigFor({tab:{url:'https://different.test/'}});
+  eq('different origin isolated',foreign.config,null);
+  ok('origin storage key excludes path',sandbox.regionStoreKey('https://example.test')===sandbox.regionStoreKey('https://example.test'));
   eq('OCR auto follows source', sandbox.ptOcrLangFor({ocrLang:'auto',sourceLang:'fr'}), 'fra');
   try { sandbox.ptOcrLangFor({ocrLang:'../bad'}); ok('invalid OCR rejected', false); } catch (_) { ok('invalid OCR rejected', true); }
   ok('cache keys unambiguous', sandbox.cacheKeyOf('a|b','c','d','x') !== sandbox.cacheKeyOf('a','b|c','d','x'));
   eq('gtx unchanged valid', sandbox.normalizeGtx(['same'],1), ['same']);
   eq('gtx malformed rejected', sandbox.normalizeGtx([{}],1), null);
+  eq('gtx whitespace rejected', sandbox.normalizeGtx(['   '],1), null);
+  const fpSettings = Object.assign({}, sandbox.PT_DEFAULTS, { llmKey: 'secret-A', llmExtraHeaders: '{"Authorization":"Bearer secret-A"}' });
+  const fp1 = await sandbox.providerFingerprint(fpSettings, 'llm');
+  eq('provider fingerprint stable', await sandbox.providerFingerprint(fpSettings, 'llm'), fp1);
+  const changedHeaders = Object.assign({}, fpSettings, { llmExtraHeaders: '{"X-Mode":"new"}' });
+  const fp2 = await sandbox.providerFingerprint(changedHeaders, 'llm');
+  ok('custom headers invalidate fingerprint', fp1 !== fp2);
+  ok('credentials not embedded in fingerprint', !fp1.includes('secret-A'));
+  const changedCredential = Object.assign({}, fpSettings, { llmKey: 'secret-B' });
+  ok('provider credentials invalidate fingerprint', fp1 !== await sandbox.providerFingerprint(changedCredential, 'llm'));
+  const changedModel = Object.assign({}, fpSettings, { llmModel: 'other-model' });
+  ok('model invalidates fingerprint', fp1 !== await sandbox.providerFingerprint(changedModel, 'llm'));
   vm.runInContext(`getSettings = async () => Object.assign({}, PT_DEFAULTS, {engine:'gtx', cacheEnabled:true, persistCache:false});
     translateChunk = async (engine, items) => ({engine, items: items.map((t) => t === 'bad' ? null : t)});`, sandbox);
   const first = await sandbox.translateTexts(['same','bad'], 'en', 'fr', {});

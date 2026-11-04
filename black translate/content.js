@@ -52,6 +52,9 @@
   let startedAt = 0, lastRate = 0, lastRateAt = 0, lastDoneCount = 0;
   const localCache = new Map();
   let imgRectCache = new WeakMap();  // el -> {at, dist}
+  let regionMode = false, regionUi = null, regionSession = 0, regionState='disabled', persistentMode=null;
+  const regionMetrics={refreshes:0,captureMs:0,ocrMs:0,translationMs:0,totalMs:0,passes:0,blocks:0,reusedOcr:0,failed:0};
+  let savedRegion=null, selectionPreviousMode=null, regionItems=[], regionRefreshTimer=0, regionBusy=false, regionPending=false, regionMutationObs=null, regionScrollHandler=null, regionResizeHandler=null;
 
   const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'INPUT', 'SELECT', 'OPTION',
     'PRE', 'CANVAS', 'IFRAME', 'OBJECT', 'EMBED', 'VIDEO', 'AUDIO', 'MATH', 'SAMP', 'TEMPLATE',
@@ -91,7 +94,9 @@
     try {
       settings = Object.assign({}, PT_DEFAULTS, await chrome.storage.sync.get(PT_DEFAULTS));
       const st = await sendMessage({ type: 'hello' });
-      if (st && st.active) startWhenReady();
+      if(st&&st.regionConfig)persistentMode=st.regionConfig.mode;
+      if (st && st.regionConfig && st.regionConfig.mode==='region' && validSavedRegion(st.regionConfig.region)) {savedRegion=st.regionConfig.region;startSavedRegion(st.regionConfig.region);}
+      else if (st && st.active) startWhenReady();
     } catch (e) { /* ignore */ }
   })();
 
@@ -107,7 +112,8 @@
     'translateImages', 'translateBackgroundImages', 'ocrMinConfidence', 'ocrLang', 'ocrQuality', 'ocrInvert',
     'ocrMaxDim', 'ocrSkipBlank', 'ocrVisibleOnly', 'scope', 'respectNoTranslate', 'translateInputs',
     'translateInlineCode', 'translateCodeBlocks', 'skipSelectors', 'minTextLength', 'skipTargetScript',
-    'deeplFormality', 'llmExtraHeaders', 'llmSystemPrompt', 'llmTemperature', 'glossary'];
+    'deeplFormality', 'llmExtraHeaders', 'llmSystemPrompt', 'llmTemperature', 'llmMaxTokens',
+    'llmKey', 'llmItems', 'llmChars', 'cacheEnabled', 'glossary'];
   const RELAYOUT_KEYS = ['lightDom', 'hibernateDistance', 'renderMargin', 'fontScale', 'boxOpacity',
     'boxPadding', 'boxRadius', 'fontFamily', 'forceRtl'];
 
@@ -119,7 +125,9 @@
     if (RESTART_KEYS.some((k) => k in changes)) localCache.clear();
     if (!active) return;
     if (RESTART_KEYS.some((k) => k in changes && JSON.stringify(changes[k].newValue) !== JSON.stringify(old[k]))) {
-      stop(); start();
+      const wasRegion=regionMode, regionCopy=savedRegion;
+      stop();
+      if(wasRegion&&validSavedRegion(regionCopy))startSavedRegion(regionCopy);else start();
     } else if (['boxColorMode', 'boxColor', 'textColorMode', 'textColor'].some((k) => k in changes)) {
       items.forEach((it) => { if (it.ov) applyColors(it); });
     } else if (RELAYOUT_KEYS.some((k) => k in changes)) {
@@ -149,8 +157,17 @@
   /* ============================ پیام‌ها ============================ */
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg || !msg.type) return false;
-    if (msg.type === 'apply-state') {
-      if (msg.active && !active) startWhenReady();
+    if (msg.type === 'begin-region') {
+      beginRegionMode();
+      sendResponse({ ok: true });
+    } else if (msg.type === 'region-mode') {
+      persistentMode=msg.mode;
+      if (msg.mode==='region' && msg.config && validSavedRegion(msg.config.region)) startSavedRegion(msg.config.region);
+      else if (msg.mode==='full') { if(regionMode){stopRegionMode();startWhenReady();}else if(!active)startWhenReady(); }
+      sendResponse(status());
+    } else if (msg.type === 'apply-state') {
+      if (msg.active && regionMode) { stop(); startWhenReady(); }
+      else if (msg.active && !active) startWhenReady();
       else if (!msg.active && active) stop();
       sendResponse(status());
     } else if (msg.type === 'status') {
@@ -163,8 +180,8 @@
 
   function status() {
     return Object.assign({
-      ok: true, active, waitingCapture: imageQueue.filter((j) => j.mode === 'capture').length,
-      scope: settings.scope, pending: pending.length, inflight, rate: lastRate
+      ok: true, active, regionMode, waitingCapture: imageQueue.filter((j) => j.mode === 'capture').length,
+      scope: settings.scope, regionState, regionMetrics, pending: pending.length, inflight, rate: lastRate
     }, stats);
   }
 
@@ -179,6 +196,91 @@
   }
 
   /* ============================ شروع / توقف ============================ */
+  function validSavedRegion(r) {
+    return !!r && ['xRatio','yRatio','widthRatio','heightRatio'].every((k)=>Number.isFinite(r[k])&&r[k]>=0&&r[k]<=1) && r.widthRatio>0&&r.heightRatio>0&&r.xRatio+r.widthRatio<=1.00001&&r.yRatio+r.heightRatio<=1.00001;
+  }
+  function beginRegionMode() {
+    if (!IS_TOP || !document.body) return;
+    selectionPreviousMode=regionMode?'region':(active?'full':persistentMode);
+    if (regionUi) { regionUi.cleanup(); regionUi=null; }
+    if (active && !regionMode) stop();
+    active=true; regionMode=true; regionState='selecting'; session++; regionSession=session;
+    if (!host) createHost();
+    showToast('محدوده‌ای را با موس انتخاب کنید؛ Enter برای OCR و Escape برای لغو.');
+    openRegionSelector();
+  }
+  function startSavedRegion(region) {
+    if (!IS_TOP || !validSavedRegion(region)) return;
+    if (active && !regionMode) stop();
+    if (regionUi && regionUi.cleanup) regionUi.cleanup(); regionUi=null;
+    if (!host) createHost();
+    if(regionMode){stopRegionListeners();clearRegionItems();}
+    active=true; regionMode=true; regionState='active'; savedRegion=Object.assign({},region);
+    session++; regionSession=session;
+    startRegionListeners();
+    refreshRegion('activate');
+  }
+  function stopRegionMode() {
+    if (!regionMode) return;
+    session++; regionSession=session; regionMode=false; regionState='disabled';
+    stopRegionListeners(); clearRegionItems();
+    if (regionUi && regionUi.cleanup) regionUi.cleanup(); regionUi=null;
+    // Leave active false so the caller controls whether full-site scanning starts.
+    active=false;
+    if (host) { host.remove(); host=null; shadow=null; layer=null; toast=null; }
+    items=[]; pending=[]; imageQueue=[]; imageActive=0; inflight=0;
+  }
+  function stopRegionListeners() {
+    if (regionRefreshTimer) clearTimeout(regionRefreshTimer); regionRefreshTimer=0; regionPending=false;
+    if (regionScrollHandler) { window.removeEventListener('scroll',regionScrollHandler,true); window.removeEventListener('scrollend',regionScrollHandler,true); }
+    if (regionResizeHandler) { window.removeEventListener('resize',regionResizeHandler); if(window.visualViewport)window.visualViewport.removeEventListener('resize',regionResizeHandler); }
+    regionScrollHandler=regionResizeHandler=null;
+    if(regionMutationObs){regionMutationObs.disconnect();regionMutationObs=null;}
+  }
+  function clearRegionItems() {
+    for(const it of regionItems){if(it.ov)it.ov.remove(); if(it.span)it.span.remove();}
+    const doomed=new Set(regionItems); items=items.filter(it=>!doomed.has(it)); regionItems=[];
+  }
+  function regionCssRect() {
+    if(!savedRegion)return null;
+    const vw=window.innerWidth,vh=window.innerHeight;
+    const left=Math.max(0,Math.min(vw,savedRegion.xRatio*vw)),top=Math.max(0,Math.min(vh,savedRegion.yRatio*vh));
+    const right=Math.max(left,Math.min(vw,left+savedRegion.widthRatio*vw)),bottom=Math.max(top,Math.min(vh,top+savedRegion.heightRatio*vh));
+    return {left,top,right,bottom,width:right-left,height:bottom-top};
+  }
+  function startRegionListeners() {
+    stopRegionListeners();
+    regionScrollHandler=()=>scheduleRegionRefresh('scroll');
+    regionResizeHandler=()=>scheduleRegionRefresh('resize');
+    window.addEventListener('scroll',regionScrollHandler,{passive:true,capture:true});
+    window.addEventListener('scrollend',regionScrollHandler,{passive:true,capture:true});
+    window.addEventListener('resize',regionResizeHandler,{passive:true});
+    if(window.visualViewport)window.visualViewport.addEventListener('resize',regionResizeHandler,{passive:true});
+    if(typeof MutationObserver==='function'){
+      regionMutationObs=new MutationObserver((records)=>{
+        const r=regionCssRect(); if(!r)return;
+        if(records.some(rec=>{
+          const candidates=rec.type==='childList'&&rec.addedNodes.length?Array.from(rec.addedNodes):[rec.target.nodeType===1?rec.target:rec.target.parentElement];
+          return candidates.some(n=>{if(!n||n===host||host&&host.contains(n))return false;const el=n.nodeType===1?n:n.parentElement;if(!el||el===document.documentElement)return false;const b=el.getBoundingClientRect&&el.getBoundingClientRect();return b&&b.right>r.left&&b.left<r.right&&b.bottom>r.top&&b.top<r.bottom;});
+        })) scheduleRegionRefresh('mutation');
+      });
+      regionMutationObs.observe(document.documentElement,{subtree:true,childList:true,characterData:true});
+    }
+  }
+  function scheduleRegionRefresh(reason) {
+    if(!regionMode||regionState==='selecting')return;
+    if(reason==='scroll'||reason==='resize')clearRegionItems();
+    if(regionRefreshTimer)clearTimeout(regionRefreshTimer);
+    regionRefreshTimer=setTimeout(()=>{regionRefreshTimer=0;refreshRegion(reason);},220);
+  }
+  async function refreshRegion(reason) {
+    if(!regionMode||regionState==='selecting')return;
+    if(regionBusy){regionPending=true;return;}
+    regionBusy=true;regionState='capturing';
+    try { await processSelectedRegion(regionCssRect(),true); }
+    finally {regionBusy=false; if(regionMode){regionState='active';if(regionPending){regionPending=false;scheduleRegionRefresh('queued');}}}
+  }
+
   function start() {
     if (!document.body || active) return;
     if (!IS_TOP && (window.innerWidth < 60 || window.innerHeight < 30)) return;  // فریم‌های تبلیغاتی
@@ -201,7 +303,110 @@
     }
   }
 
+  function openRegionSelector() {
+    if (!shadow || !regionMode) return;
+    if (regionUi && regionUi.cleanup) regionUi.cleanup();
+    const veil = document.createElement('div');
+    veil.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:auto;cursor:crosshair;background:rgba(15,23,42,.24);touch-action:none;user-select:none;';
+    const box = document.createElement('div');
+    box.style.cssText = 'position:absolute;display:none;border:2px solid #38bdf8;background:rgba(56,189,248,.12);box-sizing:border-box;pointer-events:none;';
+    const label = document.createElement('div');
+    label.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);background:#111827;color:white;padding:7px 12px;border-radius:8px;font:14px sans-serif;direction:rtl;white-space:nowrap;';
+    label.textContent = 'برای انتخاب بکشید؛ Enter تأیید، Escape لغو';
+    const actions = document.createElement('div');
+    actions.style.cssText = 'position:fixed;top:52px;left:50%;transform:translateX(-50%);display:flex;gap:8px;direction:rtl;';
+    const mk = (text) => { const b = document.createElement('button'); b.textContent = text; b.style.cssText = 'padding:7px 12px;border:0;border-radius:6px;background:#fff;color:#111827;font:bold 13px sans-serif;cursor:pointer;'; return b; };
+    const confirm = mk('تأیید و ترجمه'), cancel = mk('لغو'), again = mk('انتخاب محدوده جدید'), stopBtn = mk('توقف ترجمه محدوده');
+    actions.append(confirm, again, stopBtn, cancel);
+    veil.append(box, label, actions); shadow.appendChild(veil);
+    let start = null, chosen = null, pointerId = null;
+    const showBox = (a, b) => {
+      const l = Math.min(a.x,b.x), t = Math.min(a.y,b.y), w = Math.abs(a.x-b.x), h = Math.abs(a.y-b.y);
+      Object.assign(box.style, { display:'block', left:l+'px', top:t+'px', width:w+'px', height:h+'px' });
+      chosen = { left:l, top:t, width:w, height:h, right:l+w, bottom:t+h };
+      label.textContent = `محدوده ${Math.round(w)} × ${Math.round(h)} پیکسل — Enter برای تأیید، Escape برای لغو`;
+    };
+    const down = (e) => { if (e.target.closest('button')) return; e.preventDefault(); start = {x:e.clientX,y:e.clientY}; pointerId=e.pointerId; veil.setPointerCapture(e.pointerId); showBox(start,start); };
+    const move = (e) => { if (start && e.pointerId === pointerId) { e.preventDefault(); showBox(start,{x:e.clientX,y:e.clientY}); } };
+    const up = (e) => { if (start && e.pointerId === pointerId) { showBox(start,{x:e.clientX,y:e.clientY}); start=null; pointerId=null; } };
+    const key = (e) => { if (!regionMode) return; if (e.key === 'Escape') { e.preventDefault(); cancelRegionSelection(); } else if (e.key === 'Enter') { e.preventDefault(); confirmRegion(); } };
+    const cleanup = () => { veil.removeEventListener('pointerdown',down); veil.removeEventListener('pointermove',move); veil.removeEventListener('pointerup',up); window.removeEventListener('keydown',key,true); veil.remove(); };
+    const confirmRegion = async () => {
+      if (!chosen || chosen.width < 12 || chosen.height < 12 || !Number.isFinite(chosen.left+chosen.top+chosen.width+chosen.height)) { label.textContent='محدوده باید حداقل ۱۲ در ۱۲ پیکسل باشد'; return; }
+      const region={xRatio:chosen.left/window.innerWidth,yRatio:chosen.top/window.innerHeight,widthRatio:chosen.width/window.innerWidth,heightRatio:chosen.height/window.innerHeight};
+      cleanup(); regionUi=null;
+      const saved=await sendMessage({type:'region-save',region});
+      if(!saved||!saved.ok){showToast((saved&&saved.error)||'ذخیره‌ی محدوده ناموفق بود.');cancelRegionSelection();return;}
+      savedRegion=region; persistentMode='region'; regionMode=true; regionState='active'; startSavedRegion(region);
+    };
+    confirm.onclick = confirmRegion;
+    cancel.onclick = () => cancelRegionSelection();
+    again.onclick = () => openRegionSelector();
+    stopBtn.onclick = () => cancelRegionSelection();
+    veil.addEventListener('pointerdown',down); veil.addEventListener('pointermove',move); veil.addEventListener('pointerup',up);
+    window.addEventListener('keydown',key,true);
+    regionUi = { cleanup, chosen: () => chosen };
+  }
+
+  function cancelRegionSelection() {
+    if(regionUi&&regionUi.cleanup)regionUi.cleanup(); regionUi=null;
+    if(savedRegion&&selectionPreviousMode==='region'){ regionMode=true; regionState='active'; startRegionListeners(); showToast('انتخاب جدید لغو شد؛ محدوده‌ی ذخیره‌شده حفظ شد.'); }
+    else if(selectionPreviousMode==='full'){ stopRegionMode(); persistentMode='full'; start(); }
+    else { stopRegionMode(); }
+  }
+
+  async function processSelectedRegion(rect, refresh) {
+    if(!rect)return;
+    const started=performance.now();regionMetrics.refreshes++;
+    const mine = session, captureScrollX=window.scrollX,captureScrollY=window.scrollY;
+    const x = Math.max(0, Math.floor(rect.left)), y = Math.max(0, Math.floor(rect.top));
+    const right = Math.min(window.innerWidth, Math.ceil(rect.right)), bottom = Math.min(window.innerHeight, Math.ceil(rect.bottom));
+    if (right-x < 12 || bottom-y < 12) { showToast('محدوده‌ی انتخاب‌شده معتبر نیست.'); openRegionSelector(); return; }
+    showToast('در حال دریافت محدوده‌ی انتخاب‌شده…');
+    let res;
+    const hostVisibility = host && host.style.visibility;
+    if (host) host.style.visibility='hidden';
+    try {
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      res = await sendTimed({ type:'capture-ocr', lang:ocrLang(), minConf:settings.ocrMinConfidence,
+        quality:'fast', quick:true, viewport:{width:window.innerWidth,height:window.innerHeight,dpr:window.devicePixelRatio||1},
+        crop:{x,y,width:right-x,height:bottom-y} }, ocrTimeoutMs());
+    } catch (e) { res = null; }
+    finally { if (host) host.style.visibility=hostVisibility || ''; }
+    if (!active || !regionMode || mine !== session) return;
+    regionMetrics.totalMs+=performance.now()-started;
+    if (!res || !res.ok) { regionMetrics.failed++;regionState='error'; showToast('گرفتن تصویر یا OCR محدوده ناموفق بود.'); if(!refresh)openRegionSelector(); return; }
+    regionMetrics.captureMs+=res.captureMs||0;regionMetrics.ocrMs+=res.ms||0;regionMetrics.passes+=res.passes||0;if(res.ocrReused)regionMetrics.reusedOcr++;
+    if(window.scrollX!==captureScrollX||window.scrollY!==captureScrollY){scheduleRegionRefresh('scroll');return;}
+    clearRegionItems();
+    if (!res.blocks || !res.blocks.length) { regionState='active'; showToast('متنی در محدوده پیدا نشد.'); return; }
+    const texts = res.blocks.map((b) => b.text); regionState='processing';
+    showToast(`تعداد متن‌های شناسایی‌شده: ${texts.length}؛ در حال ترجمه…`);
+    const translationStarted=performance.now();
+    const translated = await sendMessage({ type:'translate', texts, sl:settings.sourceLang, tl:settings.targetLang, priority:true });
+    regionMetrics.translationMs+=performance.now()-translationStarted;
+    regionMetrics.totalMs+=performance.now()-translationStarted;
+    if (!active || !regionMode || mine !== session) return;
+    if (!translated || !translated.translations) { regionState='error'; showToast('ترجمه‌ی محدوده ناموفق بود.'); return; }
+    if(window.scrollX!==captureScrollX||window.scrollY!==captureScrollY){scheduleRegionRefresh('scroll');return;}
+    const sx=res.captureScaleX||window.devicePixelRatio||1, sy=res.captureScaleY||window.devicePixelRatio||1;
+    const clip=regionCssRect();
+    res.blocks.forEach((b,i) => {
+      if(translated.statuses&&translated.statuses[i]==='failed')return;
+      const bb=b.bbox, left=x+bb.x0/sx, top=y+bb.y0/sy, right=x+bb.x1/sx, bottom=y+bb.y1/sy;
+      if(right<=clip.left||left>=clip.right||bottom<=clip.top||top>=clip.bottom)return;
+      const item={type:'image',el:document.documentElement,text:b.text,translation:translated.translations[i],done:true,
+        rect:{left,top,right,bottom,width:right-left,height:bottom-top},regionRect:true,fixed:true,docTop:top,docBottom:bottom,
+        lineHeight:(b.lineHeight||bottom-top)/sy,bg:b.bg,fg:b.fg,font:{size:16,family:'',weight:'600',style:'normal',color:b.fg,align:'center'},clips:[],selfClip:clip};
+      items.push(item);regionItems.push(item);item.needsRender=true;
+    });
+    regionState='active';scheduleRender();showToast(`ترجمه‌ی محدوده تکمیل شد (${regionItems.length} بلوک).`);
+  }
+
   function stop() {
+    if (regionUi && regionUi.cleanup) regionUi.cleanup();
+    if(regionMode){stopRegionListeners();clearRegionItems();}
+    regionUi = null; regionMode = false; regionState='disabled'; regionSession = 0;
     active = false;
     session++;
     stopObservers();
@@ -1032,6 +1237,10 @@
     if (item.type === 'text') {
       if (item.nodes ? item.nodes.some((n) => !n.isConnected) : !item.el.isConnected) return { remove: true };
       rect = textRect(item);
+    } else if (item.regionRect) {
+      rect = item.fixed ? item.rect : {left:item.docLeft-window.scrollX,top:item.docTop-window.scrollY,
+        right:item.docRight-window.scrollX,bottom:item.docBottom-window.scrollY,width:item.docRight-item.docLeft,height:item.docBottom-item.docTop};
+      item.rect=rect;
     } else {
       if (!item.el.isConnected) return { remove: true };
       rect = imageBlockRect(item);
